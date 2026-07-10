@@ -78,7 +78,8 @@
 
 #define instantiate_quantized_all_rhs(type, group_size, bits) \
   instantiate_gather_qmm_rhs(affine_gather_qmm_rhs_nax, affine_gather_qmm_rhs_nax_nt, type, group_size, bits, 64, 64, 64, 2, 2, true) \
-  instantiate_gather_qmm_rhs(affine_gather_qmm_rhs_nax, affine_gather_qmm_rhs_nax_nn, type, group_size, bits, 64, 64, 64, 2, 2, false)
+  instantiate_gather_qmm_rhs(affine_gather_qmm_rhs_nax, affine_gather_qmm_rhs_nax_nn, type, group_size, bits, 64, 64, 64, 2, 2, false) \
+  instantiate_gather_qmm_rhs(affine_gather_qmm_rhs_seg_nax, affine_gather_qmm_rhs_seg_nax_nt, type, group_size, bits, 64, 64, 64, 2, 2, true)
 
 #define instantiate_quantized_funcs(type, group_size, bits) \
   instantiate_quantized_all_batched(type, group_size, bits) \
@@ -104,3 +105,38 @@
   instantiate_quantized_groups(8)
 
 instantiate_quantized_all() // clang-format on
+
+// Build per-expert row segments and BM-tile offsets from sorted rhs indices.
+// Single threadgroup; thread e lower-bounds expert e over the sorted indices.
+[[kernel]] void moe_build_segments(
+    const device uint32_t* indices [[buffer(0)]],
+    device uint32_t* seg_offsets [[buffer(1)]],
+    device uint32_t* tile_offsets [[buffer(2)]],
+    const constant int& R [[buffer(3)]],
+    const constant int& n_experts [[buffer(4)]],
+    const constant int& bm [[buffer(5)]],
+    uint tid [[thread_position_in_grid]]) {
+  if ((int)tid <= n_experts) {
+    uint32_t target = tid;
+    int lo = 0, hi = R;
+    while (lo < hi) {
+      int mid = (lo + hi) >> 1;
+      if (indices[mid] < target) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    seg_offsets[tid] = (uint32_t)lo;
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  if (tid == 0) {
+    uint32_t acc = 0;
+    for (int e = 0; e < n_experts; ++e) {
+      tile_offsets[e] = acc;
+      uint32_t c = seg_offsets[e + 1] - seg_offsets[e];
+      acc += (c + bm - 1) / bm;
+    }
+    tile_offsets[n_experts] = acc;
+  }
+}

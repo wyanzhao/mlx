@@ -3,6 +3,7 @@
 #include "mlx/backend/common/broadcasting.h"
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/gpu/copy.h"
+#include <cstdlib>
 #include "mlx/backend/metal/device.h"
 #include "mlx/backend/metal/kernels.h"
 #include "mlx/backend/metal/reduce.h"
@@ -1304,6 +1305,135 @@ void gather_qmm_rhs_nax(
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
 
+void gather_qmm_rhs_seg_nax(
+    const array& x_,
+    const array& w_,
+    const array& scales_,
+    const std::optional<array>& biases_,
+    const array& indices_,
+    array& out,
+    bool transpose,
+    int group_size,
+    int bits,
+    int M,
+    int N,
+    int K,
+    int n_experts,
+    metal::Device& d,
+    const Stream& s,
+    const std::string mode) {
+  // Expert-segmented variant: a small prep kernel builds per-expert row
+  // segments and BM-tile offsets from the sorted indices, then the GEMM grid
+  // walks expert-aligned tiles so no tile straddles an expert boundary.
+  array indices = ensure_row_contiguous(indices_, d, s);
+
+  auto broadcast_with_indices = [&d, &s, &indices](const array& x) {
+    if (x.size() / x.shape(-2) / x.shape(-1) == indices.size()) {
+      return ensure_row_contiguous(x, d, s);
+    }
+
+    auto x_shape = indices.shape();
+    x_shape.push_back(x.shape(-2));
+    x_shape.push_back(x.shape(-1));
+    array new_x(std::move(x_shape), x.dtype(), nullptr, {});
+    broadcast(x, new_x);
+    return ensure_row_contiguous(new_x, d, s);
+  };
+
+  array x = broadcast_with_indices(x_);
+  array w = ensure_row_contiguous(w_, d, s);
+  array scales = ensure_row_contiguous(scales_, d, s);
+
+  int bm = 64, bn = 64, bk = 64;
+  int wm = 2, wn = 2;
+
+  auto& compute_encoder = metal::get_command_encoder(s);
+
+  const bool align_M = false;
+  const bool align_N = (N % bn) == 0;
+  const bool align_K = (K % bk) == 0;
+
+  std::string kname;
+  kname.reserve(64);
+  std::string type_string = get_type_string(x.dtype());
+  concatenate(
+      kname,
+      mode + "_gather_qmm_rhs_seg_nax_nt_",
+      type_string,
+      "_gs_",
+      group_size,
+      "_b_",
+      bits,
+      "_bm_",
+      bm,
+      "_bn_",
+      bn,
+      "_bk_",
+      bk,
+      "_wm_",
+      wm,
+      "_wn_",
+      wn);
+
+  metal::MTLFCList func_consts = {
+      {&align_M, MTL::DataType::DataTypeBool, 200},
+      {&align_N, MTL::DataType::DataTypeBool, 201},
+      {&align_K, MTL::DataType::DataTypeBool, 202},
+  };
+
+  std::string hash_name;
+  hash_name.reserve(128);
+  concatenate(
+      hash_name,
+      kname,
+      "_align_M_",
+      align_M ? 't' : 'n',
+      "_align_N_",
+      align_N ? 't' : 'n',
+      "_align_K_",
+      align_K ? 't' : 'n');
+
+  auto kernel = get_gather_qmm_nax_kernel(
+      d,
+      kname,
+      hash_name,
+      func_consts,
+      x,
+      group_size,
+      bits,
+      mode,
+      bm,
+      bn,
+      bk,
+      wm,
+      wn,
+      transpose);
+  compute_encoder.set_compute_pipeline_state(kernel);
+
+  MTL::Size group_dims(32, wn, wm);
+  // Grid: x over N tiles, y over experts, z grid-strides each expert's
+  // BM-row tiles (cap ~2x the balanced average; stragglers loop in-kernel).
+  int avg_tiles = (M + n_experts * bm - 1) / (n_experts * bm);
+  int z_cap = std::min((M + bm - 1) / bm, avg_tiles + 1);
+  MTL::Size grid_dims((N + bn - 1) / bn, n_experts, z_cap);
+
+  int c = 0;
+  compute_encoder.set_input_array(x, c++);
+  compute_encoder.set_input_array(w, c++);
+  compute_encoder.set_input_array(scales, c++);
+  {
+    array biases = ensure_row_contiguous(*biases_, d, s);
+    compute_encoder.set_input_array(biases, c++);
+  }
+  compute_encoder.set_input_array(indices, c++);
+  compute_encoder.set_output_array(out, c++);
+  compute_encoder.set_bytes(M, c++);
+  compute_encoder.set_bytes(N, c++);
+  compute_encoder.set_bytes(K, c++);
+
+  compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+}
+
 void gather_qmm_rhs(
     const array& x_,
     const array& w_,
@@ -1322,6 +1452,29 @@ void gather_qmm_rhs(
     const std::string mode) {
   if (metal::is_nax_available() && transpose &&
       (env::enable_tf32() || x_.dtype() != float32)) {
+    static const bool seg_enabled =
+        std::getenv("MLX_SEG_GATHER_QMM") != nullptr;
+    int n_experts = w_.size() / w_.shape(-1) / w_.shape(-2);
+    if (seg_enabled && biases_.has_value() && n_experts >= 2 &&
+        n_experts + 1 <= 512 && M >= 64 * n_experts) {
+      return gather_qmm_rhs_seg_nax(
+          x_,
+          w_,
+          scales_,
+          biases_,
+          indices_,
+          out,
+          transpose,
+          group_size,
+          bits,
+          M,
+          N,
+          K,
+          n_experts,
+          d,
+          s,
+          mode);
+    }
     return gather_qmm_rhs_nax(
         /* const array& x_ = */ x_,
         /* const array& w_ = */ w_,
