@@ -37,6 +37,39 @@ class Custom : public Primitive {
   std::function<std::vector<array>(std::vector<array>)> fallback_;
 };
 
+class GatherQMMSwiGLU : public Custom {
+ public:
+  GatherQMMSwiGLU(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int group_size,
+      int bits)
+      : Custom(stream, std::move(fallback)),
+        group_size_(group_size),
+        bits_(bits) {}
+
+  static bool use_fallback(Stream stream);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GatherQMMSwiGLU)
+  int group_size() const {
+    return group_size_;
+  }
+  int bits() const {
+    return bits_;
+  }
+
+ private:
+  int group_size_;
+  int bits_;
+};
+
 class RMSNorm : public Custom {
  public:
   RMSNorm(

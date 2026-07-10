@@ -1305,6 +1305,117 @@ void gather_qmm_rhs_nax(
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
 
+bool fast::GatherQMMSwiGLU::use_fallback(Stream s) {
+  return s.device == Device::cpu || !metal::is_nax_available();
+}
+
+void fast::GatherQMMSwiGLU::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  auto& s = stream();
+  auto& d = metal::device(s.device);
+  auto& out = outputs[0];
+  out.set_data(allocator::malloc(out.nbytes()));
+
+  array x = ensure_row_contiguous(inputs[0], d, s);
+  array wg = ensure_row_contiguous(inputs[1], d, s);
+  array sg = ensure_row_contiguous(inputs[2], d, s);
+  array bg = ensure_row_contiguous(inputs[3], d, s);
+  array wu = ensure_row_contiguous(inputs[4], d, s);
+  array su = ensure_row_contiguous(inputs[5], d, s);
+  array bu = ensure_row_contiguous(inputs[6], d, s);
+  array indices = ensure_row_contiguous(inputs[7], d, s);
+
+  int M = x.shape(0);
+  int K = x.shape(1);
+  int N = wg.shape(1);
+  int n_experts = wg.shape(0);
+
+  int bm = 64, bn = 64, bk = 64;
+  int wm = 2, wn = 2;
+
+  const bool align_M = false;
+  const bool align_N = (N % bn) == 0;
+  const bool align_K = (K % bk) == 0;
+
+  std::string kname;
+  kname.reserve(64);
+  std::string type_string = get_type_string(x.dtype());
+  concatenate(
+      kname,
+      "affine_gather_qmm_gu_seg_nax_nt_",
+      type_string,
+      "_gs_",
+      group_size_,
+      "_b_",
+      bits_,
+      "_bm_",
+      bm,
+      "_bn_",
+      bn,
+      "_bk_",
+      bk,
+      "_wm_",
+      wm,
+      "_wn_",
+      wn);
+
+  metal::MTLFCList func_consts = {
+      {&align_M, MTL::DataType::DataTypeBool, 200},
+      {&align_N, MTL::DataType::DataTypeBool, 201},
+      {&align_K, MTL::DataType::DataTypeBool, 202},
+  };
+
+  std::string hash_name;
+  hash_name.reserve(128);
+  concatenate(
+      hash_name,
+      kname,
+      "_align_N_",
+      align_N ? 't' : 'n',
+      "_align_K_",
+      align_K ? 't' : 'n');
+
+  auto& compute_encoder = metal::get_command_encoder(s);
+  auto kernel = get_gather_qmm_nax_kernel(
+      d,
+      kname,
+      hash_name,
+      func_consts,
+      x,
+      group_size_,
+      bits_,
+      "affine",
+      bm,
+      bn,
+      bk,
+      wm,
+      wn,
+      true);
+  compute_encoder.set_compute_pipeline_state(kernel);
+
+  MTL::Size group_dims(32, wn, wm);
+  int avg_tiles = (M + n_experts * bm - 1) / (n_experts * bm);
+  int z_cap = std::min((M + bm - 1) / bm, avg_tiles + 1);
+  MTL::Size grid_dims((N + bn - 1) / bn, n_experts, z_cap);
+
+  int c = 0;
+  compute_encoder.set_input_array(x, c++);
+  compute_encoder.set_input_array(wg, c++);
+  compute_encoder.set_input_array(sg, c++);
+  compute_encoder.set_input_array(bg, c++);
+  compute_encoder.set_input_array(wu, c++);
+  compute_encoder.set_input_array(su, c++);
+  compute_encoder.set_input_array(bu, c++);
+  compute_encoder.set_input_array(indices, c++);
+  compute_encoder.set_output_array(out, c++);
+  compute_encoder.set_bytes(M, c++);
+  compute_encoder.set_bytes(N, c++);
+  compute_encoder.set_bytes(K, c++);
+
+  compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+}
+
 void gather_qmm_rhs_seg_nax(
     const array& x_,
     const array& w_,

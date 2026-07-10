@@ -28,11 +28,11 @@ void sdpa_full_self_attention_nax(
     const std::optional<array>& sinks) {
   using namespace mlx::steel;
 
-  int wm = 4;
+  int bd = q.shape(-1);
+  int wm = bd == 256 ? 2 : 4;
   int wn = 1;
 
-  int bd = q.shape(-1);
-  int bq = 64;
+  int bq = bd == 256 ? 32 : 64;
   int bk = 32;
 
   int B = q.shape(0);
@@ -624,7 +624,8 @@ bool ScaledDotProductAttention::use_fallback(
         query_head_dim == 256)) ||
       (query_head_dim == 192 && value_head_dim == 128);
   const bool sdpa_full_supported_head_dim = query_head_dim == value_head_dim &&
-      (query_head_dim == 64 || query_head_dim == 80 || query_head_dim == 128);
+      (query_head_dim == 64 || query_head_dim == 80 || query_head_dim == 128 ||
+       (query_head_dim == 256 && metal::is_nax_available()));
 
   const bool sdpa_full_supported_mask = !has_mask || has_arr_mask ||
       (query_sequence_length <= key_sequence_length && do_causal);

@@ -1904,3 +1904,252 @@ template <
     });
   }
 }
+
+template <
+    typename T,
+    int group_size,
+    int bits,
+    int BM,
+    int BN,
+    int BK,
+    int WM,
+    int WN,
+    bool transpose>
+[[kernel]] void affine_gather_qmm_gu_seg_nax(
+    const device T* x [[buffer(0)]],
+    const device uint32_t* wg [[buffer(1)]],
+    const device T* sg_ [[buffer(2)]],
+    const device T* bg_ [[buffer(3)]],
+    const device uint32_t* wu [[buffer(4)]],
+    const device T* su_ [[buffer(5)]],
+    const device T* bu_ [[buffer(6)]],
+    const device uint32_t* indices [[buffer(7)]],
+    device T* y [[buffer(8)]],
+    const constant int& M [[buffer(9)]],
+    const constant int& N [[buffer(10)]],
+    const constant int& K [[buffer(11)]],
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint3 gpg [[threadgroups_per_grid]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint simd_lane_id [[thread_index_in_simdgroup]]) {
+  // Fused gate+up gather matmul with silu(gate)*up epilogue. x rows are
+  // pre-gathered and sorted by expert; A tiles are loaded once and reused
+  // for both weight streams. Same expert-segmented grid-stride layout as
+  // affine_gather_qmm_rhs_seg_nax.
+  constexpr int pack_factor = get_pack_factor<bits, 8>();
+  constexpr int bytes_per_pack = get_bytes_per_pack<bits>();
+  constexpr int BK_padded = (BK + 16 / sizeof(T));
+
+  using loader_w_t = QuantizedBlockLoader<
+      T,
+      BN,
+      BK,
+      BK_padded,
+      true,
+      WM * WN * SIMD_SIZE,
+      group_size,
+      bits>;
+
+  threadgroup T Wsg[BN * BK_padded];
+  threadgroup T Wsu[BN * BK_padded];
+
+  const uint32_t index = tid.y;
+  int lo = 0, hi = M;
+  while (lo < hi) {
+    int mid = (lo + hi) >> 1;
+    if (indices[mid] < index) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  const int seg_lo = lo;
+  hi = M;
+  while (lo < hi) {
+    int mid = (lo + hi) >> 1;
+    if (indices[mid] < index + 1) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  const int seg_hi = lo;
+  if (seg_lo + (int)tid.z * BM >= seg_hi) {
+    return;
+  }
+
+  const int K_w = K * bytes_per_pack / pack_factor;
+  const int K_g = K / group_size;
+  const int K_it = K / BK;
+  const size_t stride_w = size_t(N) * K_w;
+  const size_t stride_s = size_t(N) * K_g;
+  const int y_col = tid.x * BN;
+  const size_t y_col_long = size_t(y_col);
+
+  const short tgp_bn = align_N ? BN : short(min(BN, N - y_col));
+  const int k_remain = K - K_it * BK;
+  const short2 tile_w = short2(k_remain, tgp_bn);
+
+  const device uint8_t* wgl =
+      (const device uint8_t*)wg + index * stride_w + y_col_long * K_w;
+  const device uint8_t* wul =
+      (const device uint8_t*)wu + index * stride_w + y_col_long * K_w;
+  const device T* sge = sg_ + index * stride_s + y_col_long * K_g;
+  const device T* bge = bg_ + index * stride_s + y_col_long * K_g;
+  const device T* sue = su_ + index * stride_s + y_col_long * K_g;
+  const device T* bue = bu_ + index * stride_s + y_col_long * K_g;
+
+  constexpr short SM = BM / WM;
+  constexpr short SN = BN / WN;
+  constexpr short SK = 32;
+
+  constexpr short TM = SM / 16;
+  constexpr short TN = SN / 16;
+  constexpr short TK = SK / 16;
+
+  const short tm = SM * (simd_group_id / WN);
+  const short tn = SN * (simd_group_id % WN);
+
+  const short sgp_sn =
+      align_N ? SN : min(SN, short(max(0, (N - (y_col + tn)))));
+  const bool is_unaligned_bn = align_N ? false : (tgp_bn != BN);
+
+  using AccumType = float;
+
+  for (int row0 = seg_lo + (int)tid.z * BM; row0 < seg_hi;
+       row0 += (int)gpg.z * BM) {
+    const int rows = min(BM, seg_hi - row0);
+    const short sgp_sm = min(SM, short(max(0, (rows - tm))));
+    const bool is_unaligned_sm = (sgp_sm != SM);
+
+    const device T* xn = x + size_t(row0) * K + tm * K;
+    device T* yn = y + size_t(row0) * N + y_col_long;
+
+    NAXTile<AccumType, TM, TN> Dg;
+    NAXTile<AccumType, TM, TN> Du;
+    Dg.clear();
+    Du.clear();
+
+    thread loader_w_t loader_g(
+        wgl, sge, bge, K, Wsg, simd_group_id, simd_lane_id);
+    thread loader_w_t loader_u(
+        wul, sue, bue, K, Wsu, simd_group_id, simd_lane_id);
+
+    threadgroup_barrier(mem_flags::mem_none);
+
+    dispatch_bool(!is_unaligned_sm, [&](auto kAlignedM) {
+      dispatch_bool(align_N || !is_unaligned_bn, [&](auto kAlignedN) {
+        for (int k = 0; k < K_it; k++) {
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+          if constexpr (kAlignedN.value) {
+            loader_g.load_unsafe();
+            loader_u.load_unsafe();
+          } else {
+            loader_g.load_safe(short2(BK, tgp_bn));
+            loader_u.load_safe(short2(BK, tgp_bn));
+          }
+
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          STEEL_PRAGMA_NO_UNROLL
+          for (int kk1 = 0; kk1 < BK; kk1 += SK) {
+            NAXTile<T, TM, TK> Atile;
+            NAXTile<T, TN, TK> Btile;
+
+            volatile int compiler_barrier;
+
+            if constexpr (kAlignedM.value) {
+              Atile.load(xn + kk1, K);
+            } else {
+              Atile.load_safe(xn + kk1, K, short2(SK, sgp_sm));
+            }
+
+            Btile.template load<T, BK_padded, 1>(Wsg + tn * BK_padded + kk1);
+            tile_matmad_nax(
+                Dg,
+                Atile,
+                metal::bool_constant<false>{},
+                Btile,
+                metal::bool_constant<true>{});
+
+            Btile.template load<T, BK_padded, 1>(Wsu + tn * BK_padded + kk1);
+            tile_matmad_nax(
+                Du,
+                Atile,
+                metal::bool_constant<false>{},
+                Btile,
+                metal::bool_constant<true>{});
+
+            (void)compiler_barrier;
+          }
+
+          xn += BK;
+          loader_g.next();
+          loader_u.next();
+        }
+
+        if (!align_K) {
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+          loader_g.load_safe(tile_w);
+          loader_u.load_safe(tile_w);
+          threadgroup_barrier(mem_flags::mem_threadgroup);
+
+          STEEL_PRAGMA_NO_UNROLL
+          for (int kk1 = 0; kk1 < BK; kk1 += SK) {
+            NAXTile<T, TM, TK> Atile;
+            NAXTile<T, TN, TK> Btile;
+
+            volatile int compiler_barrier;
+
+            const short psk = min(int(SK), max(0, (BK - kk1)));
+            Atile.load_safe(xn + kk1, K, short2(psk, sgp_sm));
+
+            Btile.template load<T, BK_padded, 1>(Wsg + tn * BK_padded + kk1);
+            tile_matmad_nax(
+                Dg,
+                Atile,
+                metal::bool_constant<false>{},
+                Btile,
+                metal::bool_constant<true>{});
+
+            Btile.template load<T, BK_padded, 1>(Wsu + tn * BK_padded + kk1);
+            tile_matmad_nax(
+                Du,
+                Atile,
+                metal::bool_constant<false>{},
+                Btile,
+                metal::bool_constant<true>{});
+
+            (void)compiler_barrier;
+          }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // silu(gate) * up epilogue in registers
+        STEEL_PRAGMA_UNROLL
+        for (short f = 0; f < Dg.kNumFrags; ++f) {
+          STEEL_PRAGMA_UNROLL
+          for (short e = 0; e < Dg.kElemsPerFrag; ++e) {
+            AccumType gv = Dg.val_frags[f][e];
+            AccumType uv = Du.val_frags[f][e];
+            Dg.val_frags[f][e] =
+                uv * (gv / (1.0f + metal::precise::exp(-gv)));
+          }
+        }
+
+        if constexpr (kAlignedN.value) {
+          if (sgp_sm == SM) {
+            Dg.store(yn + tm * N + tn, N);
+          } else {
+            Dg.store_slice(
+                yn + tm * N + tn, N, short2(0, 0), short2(SN, sgp_sm));
+          }
+        } else {
+          Dg.store_slice(
+              yn + tm * N + tn, N, short2(0, 0), short2(sgp_sn, sgp_sm));
+        }
+      });
+    });
+  }
+}

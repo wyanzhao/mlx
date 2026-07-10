@@ -11,6 +11,19 @@
 
 namespace mlx::core::fast {
 
+MLX_API array gather_qmm_swiglu(
+    const array& x,
+    const array& w_gate,
+    const array& scales_gate,
+    const array& biases_gate,
+    const array& w_up,
+    const array& scales_up,
+    const array& biases_up,
+    const array& sorted_indices,
+    int group_size = 64,
+    int bits = 4,
+    StreamOrDevice s = {});
+
 MLX_API array rms_norm(
     const array& x,
     const std::optional<array>& weight,

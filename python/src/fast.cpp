@@ -119,6 +119,29 @@ void init_fast(nb::module_& parent_module) {
       parent_module.def_submodule("fast", "mlx.core.fast: fast operations");
 
   m.def(
+      "gather_qmm_swiglu",
+      &mx::fast::gather_qmm_swiglu,
+      "x"_a,
+      "w_gate"_a,
+      "scales_gate"_a,
+      "biases_gate"_a,
+      "w_up"_a,
+      "scales_up"_a,
+      "biases_up"_a,
+      "sorted_indices"_a,
+      "group_size"_a = 64,
+      "bits"_a = 4,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def gather_qmm_swiglu(x: array, w_gate: array, scales_gate: array, biases_gate: array, w_up: array, scales_up: array, biases_up: array, sorted_indices: array, group_size: int = 64, bits: int = 4, *, stream: Union[None, Stream, Device] = None) -> array"),
+      R"pbdoc(
+        Fused MoE gather matmul computing silu(x @ w_gate.T) * (x @ w_up.T)
+        per sorted expert row. x is pre-gathered [rows, K]; indices are the
+        sorted expert ids per row.
+      )pbdoc");
+
+  m.def(
       "rms_norm",
       &mx::fast::rms_norm,
       "x"_a,

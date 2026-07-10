@@ -50,6 +50,93 @@ std::pair<std::vector<array>, std::vector<int>> Custom::vmap(
   return {outputs, out_axes};
 }
 
+array gather_qmm_swiglu(
+    const array& x,
+    const array& w_gate,
+    const array& scales_gate,
+    const array& biases_gate,
+    const array& w_up,
+    const array& scales_up,
+    const array& biases_up,
+    const array& sorted_indices,
+    int group_size /* = 64 */,
+    int bits /* = 4 */,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+  if (x.ndim() != 2) {
+    throw std::invalid_argument(
+        "[gather_qmm_swiglu] x must be pre-gathered 2D [rows, K].");
+  }
+  if (sorted_indices.ndim() != 1 ||
+      sorted_indices.shape(0) != x.shape(0)) {
+    throw std::invalid_argument(
+        "[gather_qmm_swiglu] indices must be 1D with one sorted expert id "
+        "per row of x.");
+  }
+  if (w_gate.shape() != w_up.shape() || w_gate.ndim() != 3) {
+    throw std::invalid_argument(
+        "[gather_qmm_swiglu] w_gate/w_up must be identically-shaped "
+        "[num_experts, N, K_packed].");
+  }
+
+  int N = w_gate.shape(1);
+  auto out_shape = Shape{x.shape(0), N};
+  auto idx = astype(sorted_indices, uint32, s);
+
+  auto fallback = [group_size, bits, s](const std::vector<array>& inputs) {
+    auto& x = inputs[0];
+    auto xe = expand_dims(x, {-2}, s);
+    auto g = gather_qmm(
+        xe,
+        inputs[1],
+        inputs[2],
+        inputs[3],
+        std::nullopt,
+        inputs[7],
+        true,
+        group_size,
+        bits,
+        "affine",
+        true,
+        s);
+    auto u = gather_qmm(
+        xe,
+        inputs[4],
+        inputs[5],
+        inputs[6],
+        std::nullopt,
+        inputs[7],
+        true,
+        group_size,
+        bits,
+        "affine",
+        true,
+        s);
+    auto out = multiply(u, multiply(g, sigmoid(g, s), s), s);
+    return std::vector<array>{squeeze(out, -2, s)};
+  };
+
+  std::vector<array> inputs = {
+      x,
+      w_gate,
+      scales_gate,
+      biases_gate,
+      w_up,
+      scales_up,
+      biases_up,
+      idx};
+
+  if (GatherQMMSwiGLU::use_fallback(s)) {
+    return fallback(inputs)[0];
+  }
+
+  return array(
+      std::move(out_shape),
+      x.dtype(),
+      std::make_shared<GatherQMMSwiGLU>(s, fallback, group_size, bits),
+      std::move(inputs));
+}
+
 array rms_norm(
     const array& x,
     const std::optional<array>& weight,
