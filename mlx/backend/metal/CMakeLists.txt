@@ -95,6 +95,8 @@ if(MLX_METAL_JIT)
   make_jit_source(quantized_nax kernels/quantized_utils.h)
   make_jit_source(fp_quantized_nax kernels/quantized_utils.h kernels/fp8.h
                   kernels/fp4.h)
+  make_jit_source(gated_delta_nax kernels/steel/gemm/nax.h
+                  kernels/steel/utils/integral_constant.h)
 
   make_jit_source(steel/attn/kernels/steel_attention_nax)
 
@@ -117,6 +119,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/eval.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/fence.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/fft.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/gated_delta.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/hadamard.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/indexing.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/logsumexp.cpp

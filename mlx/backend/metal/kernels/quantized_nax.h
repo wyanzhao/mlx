@@ -1796,7 +1796,12 @@ template <
        row0 += (int)gpg.z * BM) {
     const int rows = min(BM, seg_hi - row0);
     const short sgp_sm = min(SM, short(max(0, (rows - tm))));
-    const bool is_unaligned_sm = (sgp_sm != SM);
+
+    // Interior partial tiles can use fast block loads: rows past this
+    // expert's segment belong to neighboring experts (valid memory) and the
+    // sgp_sm-sliced store below never writes them. Only a tile that would
+    // read past the last row of x needs the safe path.
+    const bool fast_rows = (row0 + BM) <= M;
 
     const device T* xn = x + size_t(row0) * K + tm * K;
     device T* yn = y + size_t(row0) * N + y_col_long;
@@ -1809,7 +1814,7 @@ template <
 
     threadgroup_barrier(mem_flags::mem_none);
 
-    dispatch_bool(!is_unaligned_sm, [&](auto kAlignedM) {
+    dispatch_bool(fast_rows, [&](auto kAlignedM) {
       dispatch_bool(align_N || !is_unaligned_bn, [&](auto kAlignedN) {
         for (int k = 0; k < K_it; k++) {
           threadgroup_barrier(mem_flags::mem_threadgroup);

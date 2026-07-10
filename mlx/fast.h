@@ -24,6 +24,23 @@ MLX_API array gather_qmm_swiglu(
     int bits = 4,
     StreamOrDevice s = {});
 
+/**
+ * Debug-only Phase-A preparation for the fixed Qwen gated-delta shape.
+ *
+ * Inputs are k [1,T,16,128], v [1,T,32,128], g [1,T,32], and beta
+ * [1,T,32]. T must be a multiple of 64. Returns W, u, and chunk-local
+ * log-gamma in the original time-major layout, all as float32. g must be
+ * finite and in [0,1]. This M5-targeted debug specialization requires NAX and
+ * 32 KiB of threadgroup memory.
+ */
+MLX_API std::vector<array> gated_delta_wy_prepare(
+    const array& k,
+    const array& v,
+    const array& g,
+    const array& beta,
+    int chunk = 64,
+    StreamOrDevice s = {});
+
 MLX_API array rms_norm(
     const array& x,
     const std::optional<array>& weight,

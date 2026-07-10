@@ -142,6 +142,36 @@ void init_fast(nb::module_& parent_module) {
       )pbdoc");
 
   m.def(
+      "gated_delta_wy_prepare",
+      [](const mx::array& k,
+         const mx::array& v,
+         const mx::array& g,
+         const mx::array& beta,
+         int chunk,
+         mx::StreamOrDevice stream) {
+        auto outputs =
+            mx::fast::gated_delta_wy_prepare(k, v, g, beta, chunk, stream);
+        return std::make_tuple(outputs[0], outputs[1], outputs[2]);
+      },
+      "k"_a,
+      "v"_a,
+      "g"_a,
+      "beta"_a,
+      "chunk"_a = 64,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def gated_delta_wy_prepare(k: array, v: array, g: array, beta: array, chunk: int = 64, *, stream: Union[None, Stream, Device] = None) -> tuple[array, array, array]"),
+      R"pbdoc(
+        Debug-only native Phase-A preparation for the fixed Qwen gated-delta
+        shape. Inputs are ``k`` [1,T,16,128], ``v`` [1,T,32,128], and
+        ``g``/``beta`` [1,T,32], with T divisible by 64. Returns ``W``, ``u``,
+        and chunk-local ``log_gamma`` in the original layout as float32.
+        ``g`` must be finite and in [0,1]. This M5-targeted debug
+        specialization requires NAX and 32 KiB of threadgroup memory.
+      )pbdoc");
+
+  m.def(
       "rms_norm",
       &mx::fast::rms_norm,
       "x"_a,

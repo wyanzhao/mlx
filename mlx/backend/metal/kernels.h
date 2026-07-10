@@ -373,6 +373,11 @@ MTL::ComputePipelineState* get_gather_qmm_nax_kernel(
     int wn,
     bool transpose);
 
+MTL::ComputePipelineState* get_gated_delta_nax_kernel(
+    metal::Device& d,
+    const std::string& kernel_name,
+    const std::string& template_def);
+
 MTL::ComputePipelineState* get_steel_attention_kernel(
     metal::Device& d,
     const std::string& kernel_name,

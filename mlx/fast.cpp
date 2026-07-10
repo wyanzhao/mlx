@@ -137,6 +137,74 @@ array gather_qmm_swiglu(
       std::move(inputs));
 }
 
+std::vector<array> gated_delta_wy_prepare(
+    const array& k,
+    const array& v,
+    const array& g,
+    const array& beta,
+    int chunk /* = 64 */,
+    StreamOrDevice s_ /* = {} */) {
+  constexpr int kHk = 16;
+  constexpr int kHv = 32;
+  constexpr int kD = 128;
+  constexpr int kChunk = 64;
+  const char* tag = "[gated_delta_wy_prepare]";
+
+  if (chunk != kChunk) {
+    throw std::invalid_argument(std::string(tag) + " only supports chunk=64.");
+  }
+  if (k.ndim() != 4 || k.shape(0) != 1 || k.shape(2) != kHk ||
+      k.shape(3) != kD) {
+    throw std::invalid_argument(
+        std::string(tag) + " k must have shape [1,T,16,128].");
+  }
+  const auto T = k.shape(1);
+  if (T <= 0 || T % kChunk != 0) {
+    throw std::invalid_argument(
+        std::string(tag) + " T must be positive and divisible by 64.");
+  }
+  if (v.ndim() != 4 || v.shape(0) != 1 || v.shape(1) != T ||
+      v.shape(2) != kHv || v.shape(3) != kD) {
+    throw std::invalid_argument(
+        std::string(tag) + " v must have shape [1,T,32,128].");
+  }
+  if (g.ndim() != 3 || g.shape(0) != 1 || g.shape(1) != T ||
+      g.shape(2) != kHv) {
+    throw std::invalid_argument(
+        std::string(tag) + " g must have shape [1,T,32].");
+  }
+  if (beta.shape() != g.shape()) {
+    throw std::invalid_argument(
+        std::string(tag) + " beta must have shape [1,T,32].");
+  }
+  if (k.dtype() != bfloat16 || v.dtype() != bfloat16 ||
+      beta.dtype() != bfloat16 || g.dtype() != float32) {
+    throw std::invalid_argument(
+        std::string(tag) + " requires bfloat16 k/v/beta and float32 g.");
+  }
+
+  auto stream = to_stream(s_);
+  if (GatedDeltaWYPrepare::use_fallback(stream)) {
+    throw std::runtime_error(
+        std::string(tag) + " requires a Metal device with NAX support.");
+  }
+
+  auto fallback = [tag](std::vector<array>) -> std::vector<array> {
+    throw std::runtime_error(
+        std::string(tag) + " has no generic fallback; it is a debug op.");
+  };
+  auto primitive =
+      std::make_shared<GatedDeltaWYPrepare>(stream, std::move(fallback));
+  std::vector<array> inputs{k, v, g, beta};
+  auto w_shape = v.shape();
+  w_shape.back() = k.shape(3);
+  return array::make_arrays(
+      {std::move(w_shape), v.shape(), g.shape()},
+      {float32, float32, float32},
+      primitive,
+      inputs);
+}
+
 array rms_norm(
     const array& x,
     const std::optional<array>& weight,

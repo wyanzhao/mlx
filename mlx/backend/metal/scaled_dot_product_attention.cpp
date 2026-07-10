@@ -29,11 +29,15 @@ void sdpa_full_self_attention_nax(
   using namespace mlx::steel;
 
   int bd = q.shape(-1);
-  int wm = bd == 256 ? 2 : 4;
+  int wm = 4;
   int wn = 1;
 
-  int bq = bd == 256 ? 32 : 64;
-  int bk = 32;
+  int bq = 64;
+  static const int bk256 = [] {
+    const char* v = std::getenv("MLX_SDPA_BK256");
+    return (v && std::string(v) == "32") ? 32 : 64;
+  }();
+  int bk = bd == 256 ? bk256 : 32;
 
   int B = q.shape(0);
   int H = q.shape(1);
@@ -588,6 +592,14 @@ void sdpa_vector_2pass(
 
 } // namespace
 
+static bool sdpa_hd256_enabled() {
+  static const bool enabled = [] {
+    const char* v = std::getenv("MLX_SDPA_HD256");
+    return !(v && std::string(v) == "0");
+  }();
+  return enabled;
+}
+
 bool ScaledDotProductAttention::use_fallback(
     const array& q,
     const array& k,
@@ -625,7 +637,8 @@ bool ScaledDotProductAttention::use_fallback(
       (query_head_dim == 192 && value_head_dim == 128);
   const bool sdpa_full_supported_head_dim = query_head_dim == value_head_dim &&
       (query_head_dim == 64 || query_head_dim == 80 || query_head_dim == 128 ||
-       (query_head_dim == 256 && metal::is_nax_available()));
+       (query_head_dim == 256 && metal::is_nax_available() &&
+       sdpa_hd256_enabled()));
 
   const bool sdpa_full_supported_mask = !has_mask || has_arr_mask ||
       (query_sequence_length <= key_sequence_length && do_causal);

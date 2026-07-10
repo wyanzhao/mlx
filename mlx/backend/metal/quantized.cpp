@@ -1396,7 +1396,7 @@ void fast::GatherQMMSwiGLU::eval_gpu(
 
   MTL::Size group_dims(32, wn, wm);
   int avg_tiles = (M + n_experts * bm - 1) / (n_experts * bm);
-  int z_cap = std::min((M + bm - 1) / bm, avg_tiles + 1);
+  int z_cap = std::min((M + bm - 1) / bm, 2 * avg_tiles + 2);
   MTL::Size grid_dims((N + bn - 1) / bn, n_experts, z_cap);
 
   int c = 0;
@@ -1455,7 +1455,17 @@ void gather_qmm_rhs_seg_nax(
   array w = ensure_row_contiguous(w_, d, s);
   array scales = ensure_row_contiguous(scales_, d, s);
 
-  int bm = 64, bn = 64, bk = 64;
+  static const int seg_bm = [] {
+    const char* v = std::getenv("MLX_SEG_BM");
+    if (v && std::string(v) == "32") {
+      return 32;
+    }
+    if (v && std::string(v) == "128") {
+      return 128;
+    }
+    return 64;
+  }();
+  int bm = seg_bm, bn = 64, bk = 64;
   int wm = 2, wn = 2;
 
   auto& compute_encoder = metal::get_command_encoder(s);

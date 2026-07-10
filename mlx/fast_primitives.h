@@ -70,6 +70,30 @@ class GatherQMMSwiGLU : public Custom {
   int bits_;
 };
 
+class GatedDeltaWYPrepare : public Custom {
+ public:
+  GatedDeltaWYPrepare(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(Stream stream);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GatedDeltaWYPrepare)
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    auto w_shape = inputs[0].shape();
+    w_shape[2] = inputs[1].shape(2);
+    return {std::move(w_shape), inputs[1].shape(), inputs[2].shape()};
+  }
+};
+
 class RMSNorm : public Custom {
  public:
   RMSNorm(

@@ -440,6 +440,13 @@ MTL::ComputePipelineState* get_gather_qmm_nax_kernel(
   return d.get_kernel(kernel_name, hash_name, func_consts);
 }
 
+MTL::ComputePipelineState* get_gated_delta_nax_kernel(
+    metal::Device& d,
+    const std::string& kernel_name,
+    const std::string&) {
+  return d.get_kernel(kernel_name);
+}
+
 MTL::ComputePipelineState* get_steel_attention_kernel(
     metal::Device& d,
     const std::string& kernel_name,
