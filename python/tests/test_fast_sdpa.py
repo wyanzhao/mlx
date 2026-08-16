@@ -150,32 +150,60 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
 
     def test_sdpa_full_head_dim_256(self):
         # On NAX devices, large nearly-square causal blocks take the fused
-        # path, with ragged lengths padded up to the tile size inside the
-        # dispatch; everything else takes the unfused fallback. All of it
-        # must be correct.
+        # path; everything else takes the unfused fallback. Ragged lengths
+        # exercise the kernel's unaligned pipelines, and K/V sliced out of a
+        # longer preallocated cache (the way mlx-lm hands them over) exercise
+        # the dispatch reading the slice past its end. All of it must be
+        # correct.
         D = 256
         Nq, Nkv = 8, 2
         scale = D**-0.5
         mx.random.seed(0)
         cases = [
-            # (qL, kL, mask): unfused fallback shapes
-            (17, 17, None),
-            (17, 17, "causal"),
-            (128, 128, "causal"),
-            (512, 512, "causal"),
-            # fused on NAX: aligned square, ragged square (padded), aligned
-            # rectangle at the routing boundary, ragged rectangle (padded)
-            (2048, 2048, "causal"),
-            (2049, 2049, "causal"),
-            (2048, 2560, "causal"),
-            (2049, 2560, "causal"),
+            # (qL, kL, mask, cache_len): unfused fallback shapes
+            (17, 17, None, None),
+            (17, 17, "causal", None),
+            (128, 128, "causal", None),
+            (512, 512, "causal", None),
+            # fused on NAX: aligned square, ragged square (unaligned Q and
+            # K/V), aligned rectangle at the routing boundary, ragged
+            # rectangle
+            (2048, 2048, "causal", None),
+            (2049, 2049, "causal", None),
+            (2048, 2560, "causal", None),
+            (2049, 2560, "causal", None),
+            # fused on NAX with ragged K/V sliced out of a longer cache: the
+            # rows behind the slice must not leak into the output
+            (2049, 2049, "causal", 2304),
+            (2048, 2500, "causal", 2560),
+            (1031, 2049, "causal", 2304),
         ]
         for dtype in (mx.float32, mx.bfloat16):
-            for qL, kL, mask in cases:
-                with self.subTest(dtype=dtype, qL=qL, kL=kL, mask=mask):
+            for qL, kL, mask, cache_len in cases:
+                with self.subTest(
+                    dtype=dtype, qL=qL, kL=kL, mask=mask, cache_len=cache_len
+                ):
                     q = (5e-1 * mx.random.normal(shape=(1, Nq, qL, D))).astype(dtype)
-                    k = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(dtype)
-                    v = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(dtype)
+                    if cache_len is None:
+                        k = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(
+                            dtype
+                        )
+                        v = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(
+                            dtype
+                        )
+                    else:
+                        # Large, finite stale rows behind the slice: any of
+                        # them reaching the output is loud.
+                        k_cache = 1e2 * mx.random.normal(shape=(1, Nkv, cache_len, D))
+                        v_cache = 1e3 * mx.random.normal(shape=(1, Nkv, cache_len, D))
+                        k_cache[..., :kL, :] = 5e-1 * mx.random.normal(
+                            shape=(1, Nkv, kL, D)
+                        )
+                        v_cache[..., :kL, :] = 5e-1 * mx.random.normal(
+                            shape=(1, Nkv, kL, D)
+                        )
+                        k = k_cache.astype(dtype)[..., :kL, :]
+                        v = v_cache.astype(dtype)[..., :kL, :]
                     k_rep = mx.repeat(k, Nq // Nkv, axis=1)
                     v_rep = mx.repeat(v, Nq // Nkv, axis=1)
                     ref = mlx_primitives_sdpa(q, k_rep, v_rep, scale, mask=mask)
