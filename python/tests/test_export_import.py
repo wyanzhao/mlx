@@ -132,6 +132,26 @@ class TestExportImport(mlx_tests.MLXTestCase):
         with self.assertRaises(ValueError):
             imported(mx.array(1.0), [mx.array(1.0)])
 
+    def test_export_fused_shortconv_step(self):
+        path = os.path.join(self.test_dir, "fused_shortconv_step.mlxfn")
+        batch, channels, kernel_size = 2, 7, 3
+        bcx = mx.sin(mx.arange(batch * 3 * channels, dtype=mx.float32) * 0.013).reshape(
+            batch, 1, 3 * channels
+        )
+        state = mx.sin(
+            mx.arange(batch * (kernel_size - 1) * channels, dtype=mx.float32) * 0.017
+        ).reshape(batch, kernel_size - 1, channels)
+        weight = mx.sin(
+            mx.arange(channels * kernel_size, dtype=mx.float32) * 0.019
+        ).reshape(channels, kernel_size, 1)
+
+        mx.export_function(path, mx.fast.fused_shortconv_step, bcx, state, weight)
+        imported = mx.import_function(path)
+        expected = mx.fast.fused_shortconv_step(bcx, state, weight)
+        actual = imported(bcx, state, weight)
+        for result, reference in zip(actual, expected):
+            self.assertTrue(mx.array_equal(result, reference))
+
     def test_export_random_sample(self):
         path = os.path.join(self.test_dir, "fn.mlxfn")
 
