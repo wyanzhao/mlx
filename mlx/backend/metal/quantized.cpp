@@ -833,18 +833,6 @@ void qmm_nax(
   int bm = 64;
   int bn = 64;
   int bk = 64;
-  // A bm=32 variant is instantiated alongside the bm=64 one. At M=81 the
-  // bm=64 tiling allocates ceil(81/64)=2 tiles, i.e. 128 rows of MMA for 81
-  // useful rows (63% utilisation, measured at 61.2% of the 56.3 TF peak
-  // against 91.6% at M=128), while bm=32 would allocate 3 tiles = 96 rows.
-  // Whether that pays is entirely a question of per-row throughput at the
-  // smaller tile, which is UNMEASURED -- a narrower tile may lose occupancy
-  // or MMA efficiency and give back more than the wasted rows it recovers.
-  // So this is opt-in and off by default: it exists to be measured, not to
-  // change anyone's dispatch. Read uncached so a single process can A/B it.
-  if (env::qmm_nax_bm32() && transpose && M % 64 != 0 && M % 64 <= 32) {
-    bm = 32;
-  }
   MTL::Size group_dims(32, wn, wm);
   MTL::Size grid_dims((N + bn - 1) / bn, (M + bm - 1) / bm, B);
 

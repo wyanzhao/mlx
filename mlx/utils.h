@@ -229,16 +229,6 @@ inline bool sdpa_pad_head_dim_to_nax() {
   return get_var("MLX_SDPA_PAD_HEAD_DIM", 0);
 }
 
-// Use the bm=32 NAX quantized-matmul tiling when M leaves a small remainder
-// modulo 64. Off by default and MEASUREMENT-ONLY: whether a narrower tile
-// pays is a question of per-row throughput that has not been answered, and
-// the bm=64 path it would replace already runs at 102-105% of the measured
-// GEMM peak for M >= 256. Uncached for the same reason as its neighbour
-// above -- an in-process A/B has to flip it between rounds.
-inline bool qmm_nax_bm32() {
-  return get_var("MLX_QMM_NAX_BM32", 0);
-}
-
 inline int nccl_timeout(int default_value) {
   static int nccl_timeout = get_var("MLX_NCCL_TIMEOUT", default_value);
   return nccl_timeout;
