@@ -216,6 +216,19 @@ inline bool enable_tf32() {
   return enable_tf32_;
 }
 
+// Reach the NAX full-attention kernel at head dims it does not instantiate
+// (72, 80) by zero-padding q/k/v to the next size it does (96) and slicing the
+// result back. Off by default: the result is numerically equivalent but not
+// bitwise identical to the unpadded path.
+//
+// Deliberately NOT cached in a function-local static, unlike its neighbours
+// here. An in-process A/B has to flip this between rounds on one loaded model,
+// and a static would freeze whichever value the very first attention call
+// happened to see, so the two arms would silently measure the same config.
+inline bool sdpa_pad_head_dim_to_nax() {
+  return get_var("MLX_SDPA_PAD_HEAD_DIM", 0);
+}
+
 inline int nccl_timeout(int default_value) {
   static int nccl_timeout = get_var("MLX_NCCL_TIMEOUT", default_value);
   return nccl_timeout;

@@ -191,6 +191,76 @@ void sdpa_full_self_attention_metal(
         /* const std::optional<array>& sinks = */ sinks);
   }
 
+  // head_dim 72 and 80 are accepted by this op (see the supported set in
+  // ScaledDotProductAttention::eval_gpu) but sdpa_full_self_attention_nax is
+  // instantiated only for 64/96/128, so those two silently miss the matrix
+  // accelerator. Measured on g17s at 16 heads, L=S=1024, bf16: inside the gate
+  // 64/96/128 reach 111/98/84% of the 56.3 TF GEMM peak, while 72 and 80 sit
+  // at ~25% -- about 4x worse per FLOP. SigLIP2 vision towers land exactly
+  // there (hidden 1152 / 16 heads = 72).
+  //
+  // Zero-padding head_dim to the next instantiated size is EXACT in exact
+  // arithmetic: softmax runs over the KEY axis, while head_dim is the
+  // REDUCTION axis of q.k, so padded lanes contribute 0*0 to every score and
+  // v's padded output columns are dropped by the slice. It is not BITWISE
+  // identical, because accumulating 96 terms of which 24 are zero can group
+  // the floating-point partial sums differently from accumulating 72 -- hence
+  // the opt-in switch rather than an unconditional widening of the gate above.
+  if (metal::is_nax_available() && env::sdpa_pad_head_dim_to_nax() &&
+      (q.shape(3) == 72 || q.shape(3) == 80) && q.shape(3) == v.shape(3) &&
+      !sinks.has_value() && (env::enable_tf32() || q.dtype() != float32)) {
+    constexpr int kPadTo = 96;
+    auto& enc = metal::get_command_encoder(s);
+    array zero = array(0, q.dtype());
+
+    auto pad_head_dim = [&](const array& x) {
+      Shape padded_shape = x.shape();
+      padded_shape.back() = kPadTo;
+      array xp(std::move(padded_shape), x.dtype(), nullptr, {});
+      fill_gpu(zero, xp, s);
+      // The leading head_dim slice of a row-major padded array shares the
+      // padded strides at offset 0, so no separate stride math is needed.
+      array head(x.shape(), xp.dtype(), nullptr, {});
+      head.copy_shared_buffer(
+          xp, xp.strides(), xp.flags(), head.size(), /* offset = */ 0);
+      copy_gpu_inplace(x, head, CopyType::GeneralGeneral, s);
+      enc.add_temporary(head);
+      enc.add_temporary(xp);
+      return xp;
+    };
+
+    array qp = pad_head_dim(q);
+    array kp = pad_head_dim(k);
+    array vp = pad_head_dim(v);
+
+    Shape padded_out = o.shape();
+    padded_out.back() = kPadTo;
+    array op(std::move(padded_out), o.dtype(), nullptr, {});
+    op.set_data(allocator::malloc(op.nbytes()));
+
+    sdpa_full_self_attention_nax(
+        /* const Stream& s = */ s,
+        /* metal::Device& d = */ d,
+        /* const array& q = */ qp,
+        /* const array& k = */ kp,
+        /* const array& v = */ vp,
+        /* const float scale = */ scale,
+        /* array& o = */ op,
+        /* bool do_causal_ = */ do_causal_,
+        /* const std::optional<array>& mask = */ mask,
+        /* const std::optional<array>& sinks = */ sinks);
+
+    // o carries caller-chosen strides, so this goes through the general copy.
+    array op_head(o.shape(), op.dtype(), nullptr, {});
+    op_head.copy_shared_buffer(
+        op, op.strides(), op.flags(), op_head.size(), /* offset = */ 0);
+    copy_gpu_inplace(op_head, o, CopyType::GeneralGeneral, s);
+    enc.add_temporary(op_head);
+    enc.add_temporary(op);
+    enc.add_temporary(zero);
+    return;
+  }
+
   using namespace mlx::steel;
 
   int wm = 4;
