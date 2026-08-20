@@ -292,7 +292,18 @@ class MLX_API array {
 
   /** True indicates the arrays buffer is safe to reuse */
   bool is_donatable() const {
-    return array_desc_.use_count() == 1 && (array_desc_->data.use_count() == 1);
+    return is_donatable(1);
+  }
+
+  /**
+   * True when the array buffer is safe to reuse after accounting for an
+   * exact number of graph-internal ArrayDesc references. Multi-output
+   * primitives keep one input reference per output; external references must
+   * still disable donation, and the underlying data must remain unique.
+   */
+  bool is_donatable(size_t expected_array_references) const {
+    return array_desc_.use_count() == expected_array_references &&
+        (array_desc_->data.use_count() == 1);
   }
 
   /** The array's siblings. */
