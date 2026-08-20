@@ -206,9 +206,17 @@ void sdpa_full_self_attention_metal(
   // identical, because accumulating 96 terms of which 24 are zero can group
   // the floating-point partial sums differently from accumulating 72 -- hence
   // the opt-in switch rather than an unconditional widening of the gate above.
-  if (metal::is_nax_available() && env::sdpa_pad_head_dim_to_nax() &&
-      (q.shape(3) == 72 || q.shape(3) == 80) && q.shape(3) == v.shape(3) &&
-      !sinks.has_value() && (env::enable_tf32() || q.dtype() != float32)) {
+  // The shape tests come FIRST so the common path never pays the uncached
+  // getenv in env::sdpa_pad_head_dim_to_nax(). k is checked alongside q and v:
+  // the invariant that all three share head_dim is enforced upstream in
+  // fast.cpp, but this branch's failure mode if it ever broke would be an
+  // out-of-bounds write (pad_head_dim would build a view with k's larger last
+  // dim over a 96-element row stride), not merely a wrong number, and a guard
+  // that costs one comparison should not lean on a caller's invariant.
+  if ((q.shape(3) == 72 || q.shape(3) == 80) && q.shape(3) == v.shape(3) &&
+      q.shape(3) == k.shape(3) && !sinks.has_value() &&
+      metal::is_nax_available() && env::sdpa_pad_head_dim_to_nax() &&
+      (env::enable_tf32() || q.dtype() != float32)) {
     constexpr int kPadTo = 96;
     auto& enc = metal::get_command_encoder(s);
     array zero = array(0, q.dtype());
