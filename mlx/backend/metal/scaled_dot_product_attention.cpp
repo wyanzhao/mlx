@@ -213,22 +213,28 @@ void sdpa_full_self_attention_metal(
   // out-of-bounds write (pad_head_dim would build a view with k's larger last
   // dim over a 96-element row stride), not merely a wrong number, and a guard
   // that costs one comparison should not lean on a caller's invariant.
+  //
+  // sinks are NOT excluded, though an earlier revision excluded them: the NAX
+  // kernel takes them (function constant 302, bound as input 7) and indexes
+  // them as sinks[tidl.y], per HEAD, never by head_dim -- they enter as the
+  // initial softmax running max, on the KEY axis. Nothing measured here
+  // changes: had the workload carried sinks, the old exclusion would have kept
+  // it off this path entirely and the measured gain would have been zero.
   if ((q.shape(3) == 72 || q.shape(3) == 80) && q.shape(3) == v.shape(3) &&
-      q.shape(3) == k.shape(3) && !sinks.has_value() &&
-      metal::is_nax_available() && env::sdpa_pad_head_dim_to_nax() &&
+      q.shape(3) == k.shape(3) && metal::is_nax_available() &&
+      env::sdpa_pad_head_dim_to_nax() &&
       (env::enable_tf32() || q.dtype() != float32)) {
-    constexpr int kPadTo = 96;
+    constexpr int pad_to = 96;
     auto& enc = metal::get_command_encoder(s);
     array zero = array(0, q.dtype());
 
     auto pad_head_dim = [&](const array& x) {
       Shape padded_shape = x.shape();
-      padded_shape.back() = kPadTo;
+      padded_shape.back() = pad_to;
       array xp(std::move(padded_shape), x.dtype(), nullptr, {});
       fill_gpu(zero, xp, s);
-      // Copy into the leading lanes via explicit output strides. A [.., D]
-      // view over xp would be non-contiguous with span > size, so it cannot
-      // carry xp's flags/data_size.
+      // Explicit output strides: a [.., D] view over xp would be
+      // non-contiguous with span > size, so it cannot carry xp's flags.
       copy_gpu_inplace(
           /* const array& in = */ x,
           /* array& out = */ xp,
@@ -248,7 +254,7 @@ void sdpa_full_self_attention_metal(
     array vp = pad_head_dim(v);
 
     Shape padded_out = o.shape();
-    padded_out.back() = kPadTo;
+    padded_out.back() = pad_to;
     array op(std::move(padded_out), o.dtype(), nullptr, {});
     op.set_data(allocator::malloc(op.nbytes()));
 
