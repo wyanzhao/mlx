@@ -226,13 +226,21 @@ void sdpa_full_self_attention_metal(
       padded_shape.back() = kPadTo;
       array xp(std::move(padded_shape), x.dtype(), nullptr, {});
       fill_gpu(zero, xp, s);
-      // The leading head_dim slice of a row-major padded array shares the
-      // padded strides at offset 0, so no separate stride math is needed.
-      array head(x.shape(), xp.dtype(), nullptr, {});
-      head.copy_shared_buffer(
-          xp, xp.strides(), xp.flags(), head.size(), /* offset = */ 0);
-      copy_gpu_inplace(x, head, CopyType::GeneralGeneral, s);
-      enc.add_temporary(head);
+      // Write x into the leading head_dim lanes of each kPadTo-wide row by
+      // handing the copy xp's strides as explicit output strides. No [.., D]
+      // view over xp's buffer is built: such a view is neither contiguous nor
+      // row_contiguous and its span is larger than its size, so reusing
+      // xp's flags/data_size for it would violate the array invariants.
+      copy_gpu_inplace(
+          /* const array& in = */ x,
+          /* array& out = */ xp,
+          /* const Shape& data_shape = */ x.shape(),
+          /* const Strides& i_strides = */ x.strides(),
+          /* const Strides& o_strides = */ xp.strides(),
+          /* int64_t i_offset = */ 0,
+          /* int64_t o_offset = */ 0,
+          /* CopyType ctype = */ CopyType::GeneralGeneral,
+          /* const Stream& s = */ s);
       enc.add_temporary(xp);
       return xp;
     };
@@ -258,12 +266,18 @@ void sdpa_full_self_attention_metal(
         /* const std::optional<array>& mask = */ mask,
         /* const std::optional<array>& sinks = */ sinks);
 
-    // o carries caller-chosen strides, so this goes through the general copy.
-    array op_head(o.shape(), op.dtype(), nullptr, {});
-    op_head.copy_shared_buffer(
-        op, op.strides(), op.flags(), op_head.size(), /* offset = */ 0);
-    copy_gpu_inplace(op_head, o, CopyType::GeneralGeneral, s);
-    enc.add_temporary(op_head);
+    // Read the leading head_dim lanes of op back into o, which carries
+    // caller-chosen strides -- explicit strides on both sides, as above.
+    copy_gpu_inplace(
+        /* const array& in = */ op,
+        /* array& out = */ o,
+        /* const Shape& data_shape = */ o.shape(),
+        /* const Strides& i_strides = */ op.strides(),
+        /* const Strides& o_strides = */ o.strides(),
+        /* int64_t i_offset = */ 0,
+        /* int64_t o_offset = */ 0,
+        /* CopyType ctype = */ CopyType::GeneralGeneral,
+        /* const Stream& s = */ s);
     enc.add_temporary(op);
     enc.add_temporary(zero);
     return;
