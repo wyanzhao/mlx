@@ -32,6 +32,11 @@ NO_GPU(Cholesky)
 NO_GPU_MULTI(Eig)
 NO_GPU_MULTI(Eigh)
 
+namespace fast {
+NO_GPU_USE_FALLBACK(FusedShortConvStep)
+NO_GPU_USE_FALLBACK(MoERoute)
+} // namespace fast
+
 namespace distributed {
 NO_GPU_MULTI(Send)
 NO_GPU_MULTI(Recv)

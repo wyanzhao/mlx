@@ -156,6 +156,76 @@ class LayerNormVJP : public Custom {
   float eps_;
 };
 
+class FusedShortConvStep : public Custom {
+ public:
+  FusedShortConvStep(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(Stream stream);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(FusedShortConvStep)
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    auto y_shape = inputs[0].shape();
+    y_shape.back() /= 3;
+    return {std::move(y_shape), inputs[1].shape()};
+  }
+  auto state() const {
+    return std::make_tuple(nullptr);
+  }
+};
+
+class MoERoute : public Custom {
+ public:
+  MoERoute(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int top_k,
+      float routed_scaling,
+      bool norm_topk_prob)
+      : Custom(stream, std::move(fallback)),
+        top_k_(top_k),
+        routed_scaling_(routed_scaling),
+        norm_topk_prob_(norm_topk_prob) {}
+
+  static bool use_fallback(Stream stream);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(MoERoute)
+  bool is_equivalent(const Primitive& other) const override;
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    auto shape = inputs[0].shape();
+    shape.back() = top_k_;
+    return {shape, shape};
+  }
+  // The leading nullptr is the fallback slot: deserialize_primitive replays
+  // state() straight into the constructor, and an imported graph has no
+  // fallback to carry (same convention as RMSNorm and FusedShortConvStep).
+  auto state() const {
+    return std::make_tuple(nullptr, top_k_, routed_scaling_, norm_topk_prob_);
+  }
+
+ private:
+  int top_k_;
+  float routed_scaling_;
+  bool norm_topk_prob_;
+};
+
 class RoPE : public Custom {
  public:
   RoPE(

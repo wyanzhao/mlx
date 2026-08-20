@@ -175,6 +175,78 @@ void init_fast(nb::module_& parent_module) {
       )pbdoc");
 
   m.def(
+      "fused_shortconv_step",
+      &mx::fast::fused_shortconv_step,
+      "bcx"_a,
+      "state"_a,
+      "weight"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def fused_shortconv_step(bcx: array, state: array, weight: array, *, stream: StreamOrDevice = None) -> tuple[array, array]"),
+      R"pbdoc(
+        Run one fused gated depthwise short-convolution decode step.
+
+        ``bcx`` contains three channel-wise projections in ``[B, C, x]``
+        order. The operation computes ``Bx = B * x``, shifts ``Bx`` into the
+        convolution state, applies a depthwise convolution, and multiplies the
+        result by ``C``. The two returned arrays are the gated convolution
+        output and the updated state. All three inputs must have the same
+        floating-point dtype: ``float32``, ``float16``, or ``bfloat16``.
+
+        Args:
+            bcx (array): Projected gates with shape ``[B, 1, 3C]``.
+            state (array): Previous convolution state with shape
+              ``[B, K - 1, C]``.
+            weight (array): Depthwise weights with shape ``[C, K, 1]``.
+
+        Returns:
+            tuple[array, array]: Output with shape ``[B, 1, C]`` and updated
+            state with shape ``[B, K - 1, C]``.
+      )pbdoc");
+
+  m.def(
+      "moe_route",
+      &mx::fast::moe_route,
+      "x"_a,
+      "gate_weight"_a,
+      "expert_bias"_a = nb::none(),
+      nb::kw_only(),
+      "top_k"_a = 1,
+      "routed_scaling"_a = 1.0f,
+      "norm_topk_prob"_a = true,
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def moe_route(x: array, gate_weight: array, expert_bias: Optional[array] = None, *, top_k: int = 1, routed_scaling: float = 1.0, norm_topk_prob: bool = True, stream: StreamOrDevice = None) -> tuple[array, array]"),
+      R"pbdoc(
+        Select and weight the experts for one sparse-MoE step.
+
+        Fuses the whole routing chain into a single kernel: the router
+        projection, a sigmoid, the optional expert-bias add, top-k selection,
+        the score gather, the sum-normalisation and the output scale. When
+        ``expert_bias`` is given it steers SELECTION only -- the returned
+        weights come from the unbiased probabilities.
+
+        Indices are returned in descending selected-score order. Composing
+        ``argpartition`` leaves the order within the top-k unspecified, so the
+        two paths agree on the expert SET and on each expert's weight, and a
+        consumer that sums over the expert axis sees the same mixture up to
+        floating-point summation order.
+
+        Args:
+            x (array): Activations with shape ``[..., D]``.
+            gate_weight (array): Router weight with shape ``[E, D]``, float32.
+            expert_bias (array, optional): Selection bias with shape ``[E]``.
+            top_k (int): Experts to select per token.
+            routed_scaling (float): Factor applied to the returned weights.
+            norm_topk_prob (bool): Divide the weights by their sum.
+
+        Returns:
+            tuple[array, array]: ``uint32`` indices and weights, both shaped
+            ``[..., top_k]``; the weights carry ``x``'s dtype.
+      )pbdoc");
+
+  m.def(
       "rope",
       [](const mx::array& a,
          int dims,

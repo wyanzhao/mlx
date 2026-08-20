@@ -140,6 +140,8 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/primitives.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/normalization.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/shortconv.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/moe_route.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/rope.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/scan.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/slicing.cpp

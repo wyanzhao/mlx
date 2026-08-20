@@ -462,6 +462,8 @@ struct PrimitiveFactory {
       SERIALIZE_PRIMITIVE(RMSNormVJP),
       SERIALIZE_PRIMITIVE(LayerNorm),
       SERIALIZE_PRIMITIVE(LayerNormVJP),
+      SERIALIZE_PRIMITIVE(FusedShortConvStep),
+      SERIALIZE_PRIMITIVE(MoERoute),
       SERIALIZE_PRIMITIVE(RoPE),
       SERIALIZE_PRIMITIVE(ScaledDotProductAttention),
       SERIALIZE_PRIMITIVE(CustomKernel)};
