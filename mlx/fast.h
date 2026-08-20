@@ -24,26 +24,6 @@ MLX_API array layer_norm(
     float eps,
     StreamOrDevice s = {});
 
-MLX_API std::vector<array> fused_shortconv_step(
-    const array& bcx,
-    const array& state,
-    const array& weight,
-    StreamOrDevice s = {});
-
-// Capacity of the fused kernel's threadgroup and thread-private buffers.
-// Exposed so the op's validation and the kernel cannot drift apart.
-MLX_API int moe_route_max_experts();
-MLX_API int moe_route_max_topk();
-
-MLX_API std::vector<array> moe_route(
-    const array& x,
-    const array& gate_weight,
-    const std::optional<array>& expert_bias = std::nullopt,
-    int top_k = 1,
-    float routed_scaling = 1.0f,
-    bool norm_topk_prob = true,
-    StreamOrDevice s = {});
-
 MLX_API array rope(
     const array& x,
     int dims,
