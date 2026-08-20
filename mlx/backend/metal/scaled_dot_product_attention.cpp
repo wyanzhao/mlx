@@ -226,11 +226,9 @@ void sdpa_full_self_attention_metal(
       padded_shape.back() = kPadTo;
       array xp(std::move(padded_shape), x.dtype(), nullptr, {});
       fill_gpu(zero, xp, s);
-      // Write x into the leading head_dim lanes of each kPadTo-wide row by
-      // handing the copy xp's strides as explicit output strides. No [.., D]
-      // view over xp's buffer is built: such a view is neither contiguous nor
-      // row_contiguous and its span is larger than its size, so reusing
-      // xp's flags/data_size for it would violate the array invariants.
+      // Copy into the leading lanes via explicit output strides. A [.., D]
+      // view over xp would be non-contiguous with span > size, so it cannot
+      // carry xp's flags/data_size.
       copy_gpu_inplace(
           /* const array& in = */ x,
           /* array& out = */ xp,
