@@ -402,7 +402,7 @@ void sdpa_vector(
   // static the way env::bfs_max_width() and friends are: a static is read
   // once per process, and an in-process A/B has to be able to toggle arms
   // between calls. Default 0 keeps the pre-existing kernel byte for byte.
-  bool unroll_kv = env::get_var("MLX_SDPA_UNROLL", 0) != 0;
+  int unroll_kv = env::get_var("MLX_SDPA_UNROLL", 0);
   metal::MTLFCList func_consts = {
       {&has_mask, MTL::DataType::DataTypeBool, 20},
       {&query_transposed, MTL::DataType::DataTypeBool, 21},
@@ -410,14 +410,14 @@ void sdpa_vector(
       {&bool_mask, MTL::DataType::DataTypeBool, 23},
       {&float_mask, MTL::DataType::DataTypeBool, 24},
       {&has_sinks, MTL::DataType::DataTypeBool, 25},
-      {&unroll_kv, MTL::DataType::DataTypeBool, 27},
+      {&unroll_kv, MTL::DataType::DataTypeInt, 27},
   };
   std::string hash_name = kname;
   hash_name += has_mask ? (bool_mask ? "_boolmask" : "_floatmask") : "_nomask";
   hash_name += query_transposed ? "_qt" : "_qnt";
   hash_name += do_causal ? "_c" : "_nc";
   hash_name += has_sinks ? "_sinks" : "_nosinks";
-  hash_name += unroll_kv ? "_unroll" : "_nounroll";
+  hash_name += "_unroll" + std::to_string(unroll_kv);
 
   // Get the kernel
   auto& compute_encoder = metal::get_command_encoder(s);

@@ -11,10 +11,11 @@ constant bool bool_mask [[function_constant(23)]];
 constant bool float_mask [[function_constant(24)]];
 constant bool has_sinks [[function_constant(25)]];
 constant int blocks [[function_constant(26)]];
-// Unroll the K/V loop of the 1-pass sdpa_vector four ways. Off by default:
-// with it false the emitted kernel is the pre-existing one, so this is a
-// kill switch rather than a behaviour change. Host side: MLX_SDPA_UNROLL.
-constant bool unroll_kv [[function_constant(27)]];
+// Unroll factor for the K/V loop of the 1-pass sdpa_vector: 0 = off, else
+// the number of keys per trip. Zero by default, so the emitted kernel is the
+// pre-existing one and this is a kill switch rather than a behaviour change.
+// Host side: MLX_SDPA_UNROLL.
+constant int unroll_kv [[function_constant(27)]];
 
 template <typename T, int D, int V = D>
 [[kernel]] void sdpa_vector(
@@ -159,12 +160,17 @@ template <typename T, int D, int V = D>
   // shares simd_gid, so it is simdgroup-uniform and the simd_sum inside
   // process_key stays legal. The tail loop makes it exact for every N.
   int ki = simd_gid;
-  if (unroll_kv) {
+  if (unroll_kv == 4) {
     for (; ki + 3 * BN < N; ki += 4 * BN) {
       process_key(ki);
       process_key(ki + BN);
       process_key(ki + 2 * BN);
       process_key(ki + 3 * BN);
+    }
+  } else if (unroll_kv == 2) {
+    for (; ki + BN < N; ki += 2 * BN) {
+      process_key(ki);
+      process_key(ki + BN);
     }
   }
   for (; ki < N; ki += BN) {
