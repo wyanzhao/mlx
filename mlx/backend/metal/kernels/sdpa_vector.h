@@ -11,6 +11,10 @@ constant bool bool_mask [[function_constant(23)]];
 constant bool float_mask [[function_constant(24)]];
 constant bool has_sinks [[function_constant(25)]];
 constant int blocks [[function_constant(26)]];
+// Unroll the K/V loop of the 1-pass sdpa_vector four ways. Off by default:
+// with it false the emitted kernel is the pre-existing one, so this is a
+// kill switch rather than a behaviour change. Host side: MLX_SDPA_UNROLL.
+constant bool unroll_kv [[function_constant(27)]];
 
 template <typename T, int D, int V = D>
 [[kernel]] void sdpa_vector(
@@ -95,8 +99,10 @@ template <typename T, int D, int V = D>
     sum_exp_score = 1;
   }
 
-  // For each key
-  for (int i = simd_gid; i < N; i += BN) {
+  // One key, pointers advanced. Factored out of the loop so the rolled and
+  // unrolled forms below cannot drift apart: one call is exactly one
+  // iteration of the original loop.
+  auto process_key = [&](int i) {
     bool use_key = true;
     if (do_causal) {
       use_key = i <= (N - int(tpg.y) + int(q_seq_idx));
@@ -144,6 +150,25 @@ template <typename T, int D, int V = D>
     if (float_mask) {
       fmask += BN * mask_kv_seq_stride;
     }
+  };
+
+  // For each key. The unrolled form gives the compiler four independent key
+  // loads to keep in flight without needing a compile-time trip count -- N
+  // grows by one every decode step, so it can never be a constant here. The
+  // guard depends only on N and simd_gid, and every lane of a simdgroup
+  // shares simd_gid, so it is simdgroup-uniform and the simd_sum inside
+  // process_key stays legal. The tail loop makes it exact for every N.
+  int ki = simd_gid;
+  if (unroll_kv) {
+    for (; ki + 3 * BN < N; ki += 4 * BN) {
+      process_key(ki);
+      process_key(ki + BN);
+      process_key(ki + 2 * BN);
+      process_key(ki + 3 * BN);
+    }
+  }
+  for (; ki < N; ki += BN) {
+    process_key(ki);
   }
 
   // Each thread has a partial part of the output so we need to combine them.
