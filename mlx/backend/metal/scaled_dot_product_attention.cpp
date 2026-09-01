@@ -563,6 +563,9 @@ void sdpa_vector_2pass(
   bool float_mask = has_mask && !bool_mask;
   bool query_transposed = !q.flags().row_contiguous;
   bool has_sinks = sinks.has_value();
+  // Same runtime-callable kill switch as the 1-pass launcher; see there for
+  // why it is not cached in a static.
+  int unroll_kv = env::get_var("MLX_SDPA_UNROLL", 0);
   metal::MTLFCList func_consts = {
       {&has_mask, MTL::DataType::DataTypeBool, 20},
       {&query_transposed, MTL::DataType::DataTypeBool, 21},
@@ -571,6 +574,7 @@ void sdpa_vector_2pass(
       {&float_mask, MTL::DataType::DataTypeBool, 24},
       {&has_sinks, MTL::DataType::DataTypeBool, 25},
       {&blocks, MTL::DataType::DataTypeInt, 26},
+      {&unroll_kv, MTL::DataType::DataTypeInt, 27},
   };
   std::string hash_name = kname;
   hash_name += has_mask ? (bool_mask ? "_boolmask" : "_floatmask") : "_nomask";
@@ -578,6 +582,7 @@ void sdpa_vector_2pass(
   hash_name += do_causal ? "_c" : "_nc";
   hash_name += has_sinks ? "_sinks_" : "_nosinks_";
   hash_name += std::to_string(blocks);
+  hash_name += "_unroll" + std::to_string(unroll_kv);
 
   // Get the kernel
   auto kernel = d.get_kernel(kname, hash_name, func_consts);
