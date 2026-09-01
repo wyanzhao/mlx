@@ -290,8 +290,9 @@ template <typename T, int D, int V = D>
     sum_exp_score = 1;
   }
 
-  // For each key
-  for (int i = block_idx; i < N; i += blocks) {
+  // One key, pointers advanced -- same factoring as the 1-pass kernel above,
+  // and for the same reason: the rolled and unrolled forms must not drift.
+  auto process_key = [&](int i) {
     bool use_key = true;
     if (do_causal) {
       use_key = i <= (N - q_seq_len + int(q_seq_idx));
@@ -335,6 +336,28 @@ template <typename T, int D, int V = D>
     if (float_mask) {
       fmask += blocks * mask_kv_seq_stride;
     }
+  };
+
+  // For each key. `blocks` is already a function constant here, but N is not,
+  // so the trip count is still unknown at compile time and the same unroll
+  // applies. The guard depends only on N, block_idx and blocks, all uniform
+  // within a simdgroup, so the simd_sum inside stays legal.
+  int ki = block_idx;
+  if (unroll_kv == 4) {
+    for (; ki + 3 * blocks < N; ki += 4 * blocks) {
+      process_key(ki);
+      process_key(ki + blocks);
+      process_key(ki + 2 * blocks);
+      process_key(ki + 3 * blocks);
+    }
+  } else if (unroll_kv == 2) {
+    for (; ki + blocks < N; ki += 2 * blocks) {
+      process_key(ki);
+      process_key(ki + blocks);
+    }
+  }
+  for (; ki < N; ki += blocks) {
+    process_key(ki);
   }
 
   // Write the sum and max and outputs
