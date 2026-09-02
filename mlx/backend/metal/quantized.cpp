@@ -1328,8 +1328,17 @@ void gather_qmv(
 
   int bn = 8;
   int bk = 32;
+  int n_tiles = (N + bn - 1) / bn;
   MTL::Size group_dims(bk, 2, 1);
-  MTL::Size grid_dims(M, (N + bn - 1) / bn, B);
+  // Flatten the batch/expert dimension into y so a decode-time MoE gather
+  // (B = top-k, a handful of thin z-slices) is dispatched as one wide 2-D
+  // grid. The kernels recover the batch index from tid.y, so both geometries
+  // are valid; MLX_GATHER_QMV_FLAT_GRID=0 restores the 3-D grid.
+  bool flat_grid = B > 1 &&
+      static_cast<size_t>(n_tiles) * static_cast<size_t>(B) < (1ull << 31) &&
+      env::get_var("MLX_GATHER_QMV_FLAT_GRID", 1) != 0;
+  MTL::Size grid_dims = flat_grid ? MTL::Size(M, n_tiles * B, 1)
+                                  : MTL::Size(M, n_tiles, B);
 
   std::string kname;
   kname.reserve(64);

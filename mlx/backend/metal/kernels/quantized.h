@@ -2111,6 +2111,16 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
   int M = x_shape[x_batch_ndims];
+  // The host may flatten the batch/expert dimension into tid.y
+  // (MLX_GATHER_QMV_FLAT_GRID, quantized.cpp gather_qmv): tid.y then runs over
+  // n_tiles * B and the batch index is tid.y / n_tiles. Under the 3-D grid
+  // tid.y < n_tiles and this is the identity. 8 == bn on the host ==
+  // num_simdgroups * results_per_simdgroup in the qmv impls.
+  {
+    const uint n_tiles = (out_vec_size + 7) / 8;
+    const uint bidx = tid.y / n_tiles;
+    tid = uint3(tid.x, tid.y - bidx * n_tiles, tid.z + bidx);
+  }
   adjust_matrix_offsets<T>(
       x,
       w,
@@ -2173,6 +2183,16 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
   int M = x_shape[x_batch_ndims];
+  // The host may flatten the batch/expert dimension into tid.y
+  // (MLX_GATHER_QMV_FLAT_GRID, quantized.cpp gather_qmv): tid.y then runs over
+  // n_tiles * B and the batch index is tid.y / n_tiles. Under the 3-D grid
+  // tid.y < n_tiles and this is the identity. 8 == bn on the host ==
+  // num_simdgroups * results_per_simdgroup in the qmv impls.
+  {
+    const uint n_tiles = (out_vec_size + 7) / 8;
+    const uint bidx = tid.y / n_tiles;
+    tid = uint3(tid.x, tid.y - bidx * n_tiles, tid.z + bidx);
+  }
   adjust_matrix_offsets<T>(
       x,
       w,
