@@ -683,15 +683,19 @@ std::tuple<bool, std::string> has_fused_kernel(
       return {false, msg.str()};
     }
   } else {
+    // Head dim 512 (gemma-4 global attention layers) is admitted behind
+    // MLX_SDPA_VECTOR_D512 (default on) so the fused vector kernels can be
+    // compared against the unfused path at runtime.
+    const bool allow_d512 = env::get_var("MLX_SDPA_VECTOR_D512", 1) != 0;
     const bool supported_head_dim =
         (query_head_dim == value_head_dim &&
          (query_head_dim == 64 || query_head_dim == 96 ||
           query_head_dim == 128 || query_head_dim == 192 ||
-          query_head_dim == 256)) ||
+          query_head_dim == 256 || (allow_d512 && query_head_dim == 512))) ||
         (query_head_dim == 192 && value_head_dim == 128);
     if (!supported_head_dim) {
       msg << "the vector attention kernel supports head dims "
-          << "{64, 96, 128, 192, 256} with matching query/value head dims, "
+          << "{64, 96, 128, 192, 256, 512} with matching query/value head dims, "
           << "or query head dim 192 with value head dim 128; got query head "
           << "dim " << query_head_dim << " and value head dim "
           << value_head_dim << ".";
