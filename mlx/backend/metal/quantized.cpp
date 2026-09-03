@@ -834,85 +834,117 @@ void qmm_nax(
   int bm = (M <= 32) ? 32 : 64;
   int bn = 64;
   int bk = 64;
-  MTL::Size group_dims(32, wn, wm);
-  MTL::Size grid_dims((N + bn - 1) / bn, (M + bm - 1) / bm, B);
 
-  std::string kname;
-  kname.reserve(64);
-  bool aligned = N % 64 == 0;
-  bool batched = B > 1;
-  std::string type_string = get_type_string(x.dtype());
-  concatenate(
-      kname,
-      mode + (transpose ? "_qmm_t_nax_" : "_qmm_n_nax_"),
-      type_string,
-      "_gs_",
-      group_size,
-      "_b_",
-      bits,
-      "_bm",
-      bm,
-      "_bn",
-      bn,
-      "_bk",
-      bk,
-      "_wm",
-      wm,
-      "_wn",
-      wn,
-      transpose ? (aligned ? "_alN_true" : "_alN_false") : "",
-      batched ? "_batch_1" : "_batch_0");
-  std::string template_def;
-  MTL::ComputePipelineState* kernel;
-  if (transpose) {
-    kernel = get_qmm_nax_kernel_wrapped(
-        d,
+  // The mid-M SPLIT (MLX_QMM_NAX_BM32_SPLIT, default 0, read per call so one
+  // process can A/B it): at M=81 the bm=64 tiling allocates ceil(81/64)=2
+  // tiles, i.e. 128 rows of MMA for 81 useful rows (measured 61.2% of the
+  // 56.3 TF peak against 91.6% at M=128). Dispatch the head rows (a multiple
+  // of 64, at least one full bm=64 tile) and the tail rows (1..32, on the
+  // bm=32 tiling #4171 already instantiates and selects for M <= 32) as two
+  // dispatches over the same w/out buffers, the second bound at byte offsets
+  // into x and out. The earlier same-tiling split measurements (every chunk
+  // on bm=64) predate #4171 and never ran this configuration. Bitwise by
+  // construction: bm partitions output rows and never touches the K
+  // reduction, so each output row is the same dot it was before.
+  bool bm32_split = transpose && M > 64 && (M % 64) != 0 && (M % 64) <= 32 &&
+      env::get_var("MLX_QMM_NAX_BM32_SPLIT", 0) > 0;
+
+  auto dispatch_part = [&](int m_part,
+                           int bm_part,
+                           int64_t x_off,
+                           int64_t out_off) {
+    MTL::Size group_dims(32, wn, wm);
+    MTL::Size grid_dims((N + bn - 1) / bn, (m_part + bm_part - 1) / bm_part, B);
+
+    std::string kname;
+    kname.reserve(64);
+    bool aligned = N % 64 == 0;
+    bool batched = B > 1;
+    std::string type_string = get_type_string(x.dtype());
+    concatenate(
         kname,
-        "qmm_t_nax",
-        mode,
+        mode + (transpose ? "_qmm_t_nax_" : "_qmm_n_nax_"),
         type_string,
+        "_gs_",
         group_size,
+        "_b_",
         bits,
-        aligned,
-        batched,
-        bm,
-        bk,
+        "_bm",
+        bm_part,
+        "_bn",
         bn,
-        wm,
-        wn);
-  } else {
-    kernel = get_qmm_nax_kernel_wrapped(
-        d,
-        kname,
-        "qmm_n_nax",
-        mode,
-        type_string,
-        group_size,
-        bits,
-        batched,
-        bm,
+        "_bk",
         bk,
-        bn,
+        "_wm",
         wm,
-        wn);
-  }
-  auto& compute_encoder = metal::get_command_encoder(s);
-  compute_encoder.set_compute_pipeline_state(kernel);
+        "_wn",
+        wn,
+        transpose ? (aligned ? "_alN_true" : "_alN_false") : "",
+        batched ? "_batch_1" : "_batch_0");
+    MTL::ComputePipelineState* kernel;
+    if (transpose) {
+      kernel = get_qmm_nax_kernel_wrapped(
+          d,
+          kname,
+          "qmm_t_nax",
+          mode,
+          type_string,
+          group_size,
+          bits,
+          aligned,
+          batched,
+          bm_part,
+          bk,
+          bn,
+          wm,
+          wn);
+    } else {
+      kernel = get_qmm_nax_kernel_wrapped(
+          d,
+          kname,
+          "qmm_n_nax",
+          mode,
+          type_string,
+          group_size,
+          bits,
+          batched,
+          bm_part,
+          bk,
+          bn,
+          wm,
+          wn);
+    }
+    auto& compute_encoder = metal::get_command_encoder(s);
+    compute_encoder.set_compute_pipeline_state(kernel);
 
-  int c = 0;
-  compute_encoder.set_input_array(w, c++);
-  compute_encoder.set_input_array(scales, c++);
-  if (biases) {
-    compute_encoder.set_input_array(*biases, c++);
-  }
-  compute_encoder.set_input_array(x, c++);
-  compute_encoder.set_output_array(out, c++);
-  compute_encoder.set_bytes(K, c++);
-  compute_encoder.set_bytes(N, c++);
-  compute_encoder.set_bytes(M, c++);
-  add_strides_and_shapes(compute_encoder, B <= 1, x, w, scales, biases, c);
+    int c = 0;
+    compute_encoder.set_input_array(w, c++);
+    compute_encoder.set_input_array(scales, c++);
+    if (biases) {
+      compute_encoder.set_input_array(*biases, c++);
+    }
+    compute_encoder.set_input_array(x, c++, x_off);
+    compute_encoder.set_output_array(out, c++, out_off);
+    compute_encoder.set_bytes(K, c++);
+    compute_encoder.set_bytes(N, c++);
+    compute_encoder.set_bytes(m_part, c++);
+    add_strides_and_shapes(compute_encoder, B <= 1, x, w, scales, biases, c);
 
-  compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+    compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+  };
+
+  if (bm32_split) {
+    int m_head = M - (M % 64);
+    int m_tail = M % 64;
+    // The M axis is the second-to-last of x and out for both the batched and
+    // unbatched layouts, so one byte offset per buffer serves every batch.
+    int64_t x_off = m_head * x.strides(x.ndim() - 2) * x.itemsize();
+    int64_t out_off = m_head * out.strides(out.ndim() - 2) * out.itemsize();
+    dispatch_part(m_head, 64, 0, 0);
+    dispatch_part(m_tail, 32, x_off, out_off);
+    return;
+  }
+  dispatch_part(M, bm, 0, 0);
 }
 
 void gather_qmm_nax(
