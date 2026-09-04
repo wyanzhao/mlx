@@ -512,6 +512,73 @@ class TestQuantized(mlx_tests.MLXTestCase):
                 )
                 self.assertLess((y_ref - y).abs().max(), 1e-3)
 
+    def test_qmm_mid_m_split(self):
+        # The mid-M split dispatch must match both the unsplit path and the
+        # dequantized reference across band edges and unaligned N. Batched,
+        # float16, and mxfp4 inputs exercise the excluded scope.
+        if mx.default_device() == mx.cpu:
+            self.skipTest("Covers GPU kernels only")
+        key = mx.random.key(0)
+        k1, k2 = mx.random.split(key)
+        K = 1024
+        tests = [
+            # mode, group_size, bits, M, N, batch, dtype
+            ("affine", 64, 4, 81, 10752, (), mx.bfloat16),
+            ("affine", 64, 4, 65, 8257, (), mx.bfloat16),  # unaligned N
+            ("affine", 64, 4, 96, 8256, (), mx.bfloat16),  # remainder 32
+            ("affine", 64, 4, 97, 8256, (), mx.bfloat16),  # outside band
+            ("affine", 64, 4, 81, 8256, (2,), mx.bfloat16),  # batched
+            ("affine", 64, 4, 81, 8256, (), mx.float16),
+            ("mxfp4", None, None, 81, 8256, (), mx.bfloat16),
+        ]
+        for mode, group_size, bits, M, N, batch, dtype in tests:
+            with self.subTest(
+                mode=mode,
+                group_size=group_size,
+                bits=bits,
+                M=M,
+                N=N,
+                batch=batch,
+                dtype=dtype,
+            ):
+                x = (mx.random.normal(batch + (M, K), key=k1) / K**0.5).astype(dtype)
+                w = (mx.random.normal(batch + (N, K), key=k2) / K**0.5).astype(dtype)
+                if mode == "affine":
+                    wq = mx.quantize(w, group_size=group_size, bits=bits)
+                else:
+                    wq = mx.quantize(w, mode=mode)
+                w_hat = mx.dequantize(*wq, group_size=group_size, bits=bits, mode=mode)
+                y_ref = x @ w_hat.swapaxes(-1, -2)
+                previous = os.environ.get("MLX_QMM_NAX_BM32_SPLIT")
+                try:
+                    os.environ["MLX_QMM_NAX_BM32_SPLIT"] = "0"
+                    y_unsplit = mx.quantized_matmul(
+                        x,
+                        *wq,
+                        transpose=True,
+                        group_size=group_size,
+                        bits=bits,
+                        mode=mode,
+                    )
+                    mx.eval(y_unsplit)
+                    os.environ["MLX_QMM_NAX_BM32_SPLIT"] = "1"
+                    y_split = mx.quantized_matmul(
+                        x,
+                        *wq,
+                        transpose=True,
+                        group_size=group_size,
+                        bits=bits,
+                        mode=mode,
+                    )
+                    mx.eval(y_split)
+                finally:
+                    if previous is None:
+                        os.environ.pop("MLX_QMM_NAX_BM32_SPLIT", None)
+                    else:
+                        os.environ["MLX_QMM_NAX_BM32_SPLIT"] = previous
+                self.assertLess((y_ref - y_unsplit).abs().max(), 1.5e-3)
+                self.assertTrue(mx.array_equal(y_unsplit, y_split))
+
     def test_qmm_vjp(self):
         key = mx.random.key(0)
         k1, k2 = mx.random.split(key)
