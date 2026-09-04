@@ -1,5 +1,7 @@
 // Copyright © 2023-2026 Apple Inc.
 
+#include <cstdio>
+
 #include "mlx/backend/common/quantized.h"
 #include "mlx/backend/common/broadcasting.h"
 #include "mlx/backend/common/compiled.h"
@@ -16,6 +18,14 @@
 namespace mlx::core {
 
 namespace {
+
+// TEMPORARY MEASUREMENT PROBE -- NOT FOR MERGE. See the O2 comment in
+// GatherQMM::eval_gpu. Latched at dylib load, i.e. before any Python code can
+// putenv, so the level below is only re-read per dispatch in a process that was
+// LAUNCHED with the variable set. A process that never sets it pays exactly
+// this one getenv and then a predicted branch.
+const bool gqmm_rhs_probe_present =
+    env::get_var("MLX_GQMM_RHS_DECODE_PROBE", 0) != 0;
 
 template <typename... Args>
 auto get_quantized_kernel_wrapped(
@@ -1902,7 +1912,57 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   // matmuls and reuse reading x and w.
   //
   // TODO: Tune 16 and 4 here a bit better.
-  if (M == 1 && B >= 16 && right_sorted_ == true && B / E >= 4) {
+  //
+  // TEMPORARY MEASUREMENT PROBE -- NOT FOR MERGE. Gap-map row O2 asks whether
+  // this path is worth reaching at decode geometry (M == 1, B = top_k = 8,
+  // E = 256). MLX_GQMM_RHS_DECODE_PROBE, default 0 = stock dispatch:
+  //   1  drop the two untuned constants (B >= 16, B / E >= 4)
+  //   2  also drop right_sorted_, so the probe fires on an unmodified mlx-lm
+  //      SwitchGLU, which passes sorted_indices=False whenever
+  //      indices.size() < 64 (switch_layers.py:181) -- i.e. always at decode
+  // The LEVEL is re-read per dispatch so ONE process can interleave the two
+  // arms, which the chassis-drift rule requires (card K-d6683f02); the same
+  // per-dispatch env::get_var idiom as MLX_SDPA_BLOCKS
+  // (scaled_dot_product_attention.cpp:523) and MLX_CONV_UNFOLD_TILE_ROWS
+  // (conv.cpp:38). A getenv per dispatch is a carry cost no shipped change may
+  // pay (card K-d689f937 caution) -- hence NOT FOR MERGE.
+  const int gqmm_rhs_probe = gqmm_rhs_probe_present
+      ? env::get_var("MLX_GQMM_RHS_DECODE_PROBE", 0)
+      : 0;
+  const bool gqmm_rhs_admit = (gqmm_rhs_probe > 0)
+      ? (M == 1 && (gqmm_rhs_probe >= 2 || right_sorted_ == true))
+      : (M == 1 && B >= 16 && right_sorted_ == true && B / E >= 4);
+  if (gqmm_rhs_admit) {
+    // gather_qmm_rhs takes the row count of x AFTER broadcast_with_indices.
+    // The stock gate only fires when the caller pre-materialized one x row per
+    // index (sorted_indices=True), where x.size() / K == B * M; once the gate
+    // is loosened x may still be the un-broadcast (1, ..., 1, M, K), and
+    // x.size() / K would then under-count the rows and leave B * M - 1 rows of
+    // `out` unwritten. The dense analogue reads M after the broadcast
+    // (matmul.cpp:2306-2307) and has no such trap.
+    const int gqmm_rhs_rows = (gqmm_rhs_probe > 0)
+        ? B * M
+        : static_cast<int>(x.size() / K);
+    if (gqmm_rhs_probe > 0) {
+      static const bool announced = [&]() {
+        fprintf(
+            stderr,
+            "[gqmm_rhs_probe] MLX_GQMM_RHS_DECODE_PROBE=%d forcing"
+            " gather_qmm_rhs: M=%d N=%d K=%d B=%d E=%d right_sorted=%d"
+            " rows=%d (stock would pass %d)\n",
+            gqmm_rhs_probe,
+            M,
+            N,
+            K,
+            B,
+            E,
+            static_cast<int>(right_sorted_),
+            gqmm_rhs_rows,
+            static_cast<int>(x.size() / K));
+        return true;
+      }();
+      (void)announced;
+    }
     gather_qmm_rhs(
         x,
         w,
@@ -1913,7 +1973,7 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
         transpose_,
         group_size_,
         bits_,
-        x.size() / K,
+        gqmm_rhs_rows,
         N,
         K,
         d,
