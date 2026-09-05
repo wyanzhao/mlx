@@ -467,9 +467,13 @@ void sdpa_vector_2pass(
   kname.reserve(64);
   kname += "sdpa_vector_2pass_1";
   int gqa_factor = q.shape(1) / k.shape(1);
+  // MEASUREMENT ONLY (NOT FOR MERGE): MLX_SDPA_GQA256=0 restores the
+  // pre-change routing for head dim 256 so that a same-instance A/B can
+  // toggle the specialization per call. Default 1 == the clean branch.
   bool gqa_dims =
       (gqa_factor == 8 &&
-       (q.shape(-1) == 64 || q.shape(-1) == 128 || q.shape(-1) == 256)) ||
+       (q.shape(-1) == 64 || q.shape(-1) == 128 ||
+        (q.shape(-1) == 256 && env::get_var("MLX_SDPA_GQA256", 1) == 1))) ||
       ((gqa_factor == 12 || gqa_factor == 16) && q.shape(-1) == 128);
   if (!mask && !sinks && q.shape(2) == 1 &&
       q.shape(1) == gqa_factor * k.shape(1) && q.shape(-1) == v.shape(-1) &&
