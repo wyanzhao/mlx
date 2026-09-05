@@ -345,7 +345,13 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
     def test_sdpa_vector_gqa_long(self):
         scale = 1.0
         mx.random.seed(0)
-        for Nq, Nkv, D in [(32, 4, 128), (64, 8, 64), (48, 4, 128), (64, 4, 128)]:
+        for Nq, Nkv, D in [
+            (32, 4, 128),
+            (64, 8, 64),
+            (48, 4, 128),
+            (64, 4, 128),
+            (16, 2, 256),
+        ]:
             for B, L in [(1, 8192), (1, 8201), (2, 8192)]:
                 q = 5e-1 * mx.random.normal(shape=(B, Nq, 1, D))
                 k = 5e-1 * mx.random.normal(shape=(B, Nkv, L + 32, D))[:, :, :L]
@@ -353,7 +359,12 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                 kr = mx.repeat(k, Nq // Nkv, axis=1)
                 vr = mx.repeat(v, Nq // Nkv, axis=1)
                 ref = mlx_primitives_sdpa(q, kr, vr, scale)
-                out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+                # force_fused so that a routing regression to the unfused
+                # path raises here instead of quietly passing on the
+                # fallback's numerics.
+                out = mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=scale, force_fused=True
+                )
                 self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
 
     def test_sdpa_fully_masked(self):
