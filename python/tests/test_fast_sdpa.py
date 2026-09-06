@@ -362,6 +362,27 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                 out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
                 self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
 
+    @unittest.skipUnless(mx.metal.is_available(), "Metal is not available")
+    def test_sdpa_vector_gqa_d256_low_precision(self):
+        mx.random.seed(0)
+        for dtype, atol in [(mx.float16, 1e-3), (mx.bfloat16, 5e-3)]:
+            for length in [8192, 8201]:
+                with self.subTest(dtype=dtype, length=length):
+                    q = mx.random.normal((1, 16, 1, 256)).astype(dtype)
+                    k = mx.random.normal((1, 2, length + 32, 256)).astype(dtype)
+                    v = mx.random.normal((1, 2, length + 32, 256)).astype(dtype)
+                    k, v = k[:, :, :length], v[:, :, :length]
+                    ref = mlx_primitives_sdpa(
+                        q.astype(mx.float32),
+                        mx.repeat(k.astype(mx.float32), 8, axis=1),
+                        mx.repeat(v.astype(mx.float32), 8, axis=1),
+                        256**-0.5,
+                    )
+                    out = mx.fast.scaled_dot_product_attention(
+                        q, k, v, scale=256**-0.5
+                    )
+                    self.assertTrue(mx.allclose(ref, out, atol=atol, rtol=1e-3))
+
     def test_sdpa_fully_masked(self):
         Lkv = 8
         mask = mx.array(False)
