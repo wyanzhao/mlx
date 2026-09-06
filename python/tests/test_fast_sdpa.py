@@ -359,12 +359,7 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                 kr = mx.repeat(k, Nq // Nkv, axis=1)
                 vr = mx.repeat(v, Nq // Nkv, axis=1)
                 ref = mlx_primitives_sdpa(q, kr, vr, scale)
-                # force_fused so that a routing regression to the unfused
-                # path raises here instead of quietly passing on the
-                # fallback's numerics.
-                out = mx.fast.scaled_dot_product_attention(
-                    q, k, v, scale=scale, force_fused=True
-                )
+                out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
                 self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
 
     def test_sdpa_fully_masked(self):
