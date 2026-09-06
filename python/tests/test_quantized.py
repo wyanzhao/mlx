@@ -527,6 +527,9 @@ class TestQuantized(mlx_tests.MLXTestCase):
             ("affine", 64, 4, 65, 8257, (), mx.bfloat16),  # unaligned N
             ("affine", 64, 4, 96, 8256, (), mx.bfloat16),  # remainder 32
             ("affine", 64, 4, 97, 8256, (), mx.bfloat16),  # outside band
+            ("affine", 64, 4, 129, 8257, (), mx.bfloat16),  # two head blocks
+            ("affine", 64, 4, 160, 8256, (), mx.bfloat16),
+            ("affine", 64, 4, 193, 8256, (), mx.bfloat16),  # three head blocks
             ("affine", 64, 4, 81, 8256, (2,), mx.bfloat16),  # batched
             ("affine", 64, 4, 81, 8256, (), mx.float16),
             ("mxfp4", None, None, 81, 8256, (), mx.bfloat16),
