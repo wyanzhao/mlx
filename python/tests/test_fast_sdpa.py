@@ -238,6 +238,51 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                         tol = 5e-3
                     self.assertTrue(mx.allclose(ref, out, atol=tol, rtol=tol))
 
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
+    def test_sdpa_head_dim_256_prefill_window(self):
+        # A 512-query D=256 causal chunk is routed to the NAX head-dim-split
+        # kernel while the key length stays at most 1536; a longer key length
+        # keeps the unfused path, and MLX_SDPA_NAX_D256_WINDOW=0 restores the
+        # qL >= 1024 rule on its own. Every routing must match the reference.
+        D = 256
+        qL = 512
+        scale = D**-0.5
+        cases = [
+            (16, 2, 512),
+            (16, 2, 1024),
+            (16, 2, 1536),
+            (16, 2, 2039),
+            (32, 16, 512),
+        ]
+        try:
+            for window in (None, "0"):
+                if window is None:
+                    os.environ.pop("MLX_SDPA_NAX_D256_WINDOW", None)
+                else:
+                    os.environ["MLX_SDPA_NAX_D256_WINDOW"] = window
+                for Nq, Nkv, kL in cases:
+                    with self.subTest(window=window, Nq=Nq, Nkv=Nkv, kL=kL):
+                        mx.random.seed(0)
+                        q = (5e-1 * mx.random.normal(shape=(1, Nq, qL, D))).astype(
+                            mx.float16
+                        )
+                        k = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(
+                            mx.float16
+                        )
+                        v = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(
+                            mx.float16
+                        )
+                        k_rep = mx.repeat(k, Nq // Nkv, axis=1)
+                        v_rep = mx.repeat(v, Nq // Nkv, axis=1)
+                        ref = mlx_primitives_sdpa(q, k_rep, v_rep, scale, mask="causal")
+                        out = mx.fast.scaled_dot_product_attention(
+                            q, k, v, scale=scale, mask="causal"
+                        )
+                        self.assertEqual(out.shape, ref.shape)
+                        self.assertTrue(mx.allclose(ref, out, atol=5e-3, rtol=5e-3))
+        finally:
+            os.environ.pop("MLX_SDPA_NAX_D256_WINDOW", None)
+
     def test_sdpa_vector_kv_transposed_head_seq(self):
         D = 64
         Nq = 4
