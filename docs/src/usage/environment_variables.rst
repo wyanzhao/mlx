@@ -128,6 +128,13 @@ users. Their behavior may change as the implementation evolves.
    dot-product attention kernel. Positive values are rounded up to a multiple
    of ``32``.
 
+.. envvar:: MLX_SDPA_NAX_D256_WINDOW
+
+   Allow the Metal head-dim-split scaled dot-product attention kernel to take
+   causal attention with a head dimension of ``256`` and 512 to 1023 query
+   rows. The default is ``1``. Set it to ``0`` to restore the previous
+   routing, which uses that kernel from 1024 query rows only.
+
 CUDA
 ----
 
