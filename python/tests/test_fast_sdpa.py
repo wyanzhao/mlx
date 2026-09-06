@@ -1,3 +1,4 @@
+import io
 import math
 import os
 import unittest
@@ -237,6 +238,122 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                     else:
                         tol = 5e-3
                     self.assertTrue(mx.allclose(ref, out, atol=tol, rtol=tol))
+
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
+    def test_sdpa_head_dim_256_prefill_window(self):
+        # A 512-query D=256 CAUSAL chunk is routed to the NAX head-dim-split
+        # kernel while the key length stays at most 1536; a longer key length
+        # keeps the unfused path, and MLX_SDPA_NAX_D256_WINDOW=0 restores the
+        # qL >= 1024 rule on its own. An explicit mask array is not admitted by
+        # the window: it keeps the unfused path in both switch states.
+        # Every routing must match the reference. The numerics run on every GPU
+        # backend; the routing assertions describe the Metal head-dim-split
+        # path only and are skipped where that path does not exist.
+        D = 256
+        qL = 512
+        scale = D**-0.5
+        cases = [
+            (16, 2, 512, 512),
+            (16, 2, 1024, 512),
+            (16, 2, 1536, 512),
+            (16, 2, 2039, 512),
+            (32, 16, 512, 512),
+            (16, 2, 1535, 512),
+            (16, 2, 1537, 512),
+            (16, 2, 1024, 511),
+            (16, 2, 1024, 768),
+            (16, 2, 1024, 1023),
+        ]
+
+        def is_fused(out):
+            with io.StringIO() as buf:
+                mx.export_to_dot(buf, output=out)
+                return "ScaledDotProductAttention" in buf.getvalue()
+
+        def inputs(Nq, Nkv, kL, rows=qL):
+            mx.random.seed(0)
+            q = (5e-1 * mx.random.normal(shape=(1, Nq, rows, D))).astype(mx.float16)
+            k = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(mx.float16)
+            v = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(mx.float16)
+            return q, k, v
+
+        def reference(q, k, v, Nq, Nkv, mask):
+            k_rep = mx.repeat(k, Nq // Nkv, axis=1)
+            v_rep = mx.repeat(v, Nq // Nkv, axis=1)
+            return mlx_primitives_sdpa(q, k_rep, v_rep, scale, mask=mask)
+
+        def set_window(value):
+            if value is None:
+                os.environ.pop("MLX_SDPA_NAX_D256_WINDOW", None)
+            else:
+                os.environ["MLX_SDPA_NAX_D256_WINDOW"] = value
+
+        saved = os.environ.get("MLX_SDPA_NAX_D256_WINDOW")
+        try:
+            # Probe the routing the window extends rather than assuming it:
+            # a D=256 causal fp16 call with 1024 query rows takes the
+            # head-dim-split kernel only where that kernel is available, and
+            # the switch does not touch that rule.
+            set_window(None)
+            probe = mx.fast.scaled_dot_product_attention(
+                *inputs(16, 2, 1024, rows=1024), scale=scale, mask="causal"
+            )
+            has_split_routing = mx.metal.is_available() and is_fused(probe)
+            del probe
+
+            for window in (None, "0"):
+                set_window(window)
+                for Nq, Nkv, kL, rows in cases:
+                    with self.subTest(window=window, Nq=Nq, Nkv=Nkv, kL=kL, qL=rows):
+                        q, k, v = inputs(Nq, Nkv, kL, rows=rows)
+                        ref = reference(q, k, v, Nq, Nkv, "causal")
+                        out = mx.fast.scaled_dot_product_attention(
+                            q, k, v, scale=scale, mask="causal"
+                        )
+                        if has_split_routing:
+                            self.assertEqual(
+                                is_fused(out),
+                                window != "0" and rows >= 512 and kL <= 1536,
+                            )
+                        self.assertEqual(out.shape, ref.shape)
+                        self.assertTrue(mx.allclose(ref, out, atol=5e-3, rtol=5e-3))
+
+            # The window only moves the causal cells inside it, and it moves
+            # them for real: same inputs, different kernel, both correct.
+            with self.subTest(routing="nax_head_dim_split"):
+                if not has_split_routing:
+                    self.skipTest(
+                        "the D=256 head-dim-split attention kernel is not "
+                        "available here: a causal 1024-query D=256 call is "
+                        "not fused, so the window changes no routing"
+                    )
+                Nq, Nkv, kL = 16, 2, 1536
+                q, k, v = inputs(Nq, Nkv, kL)
+                bool_mask = (mx.arange(qL) + (kL - qL))[:, None] >= mx.arange(kL)[None]
+                for mask, admitted in (("causal", True), (bool_mask, False)):
+                    name = "causal" if isinstance(mask, str) else "bool_array"
+                    with self.subTest(mask=name, Nq=Nq, Nkv=Nkv, kL=kL):
+                        ref = reference(q, k, v, Nq, Nkv, mask)
+                        outs = {}
+                        for window in ("1", "0"):
+                            set_window(window)
+                            outs[window] = mx.fast.scaled_dot_product_attention(
+                                q, k, v, scale=scale, mask=mask
+                            )
+                            self.assertEqual(
+                                is_fused(outs[window]), admitted and window == "1"
+                            )
+                            self.assertTrue(
+                                mx.allclose(ref, outs[window], atol=5e-3, rtol=5e-3)
+                            )
+                        same = mx.array_equal(
+                            outs["0"].view(mx.uint16), outs["1"].view(mx.uint16)
+                        ).item()
+                        # Unchanged routing must preserve the output bits.
+                        if not admitted:
+                            self.assertTrue(same)
+        finally:
+            set_window(saved)
 
     def test_sdpa_vector_kv_transposed_head_seq(self):
         D = 64
