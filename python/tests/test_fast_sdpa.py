@@ -1,3 +1,4 @@
+import io
 import math
 import os
 import unittest
@@ -240,10 +241,12 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
 
     @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
     def test_sdpa_head_dim_256_prefill_window(self):
-        # A 512-query D=256 causal chunk is routed to the NAX head-dim-split
+        # A 512-query D=256 CAUSAL chunk is routed to the NAX head-dim-split
         # kernel while the key length stays at most 1536; a longer key length
         # keeps the unfused path, and MLX_SDPA_NAX_D256_WINDOW=0 restores the
-        # qL >= 1024 rule on its own. Every routing must match the reference.
+        # qL >= 1024 rule on its own. An explicit mask array is not admitted by
+        # the window: it keeps the unfused path in both switch states.
+        # Every routing must match the reference.
         D = 256
         qL = 512
         scale = D**-0.5
@@ -254,6 +257,24 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
             (16, 2, 2039),
             (32, 16, 512),
         ]
+
+        def is_fused(out):
+            buf = io.StringIO()
+            mx.export_to_dot(buf, output=out)
+            return "ScaledDotProductAttention" in buf.getvalue()
+
+        def inputs(Nq, Nkv, kL):
+            mx.random.seed(0)
+            q = (5e-1 * mx.random.normal(shape=(1, Nq, qL, D))).astype(mx.float16)
+            k = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(mx.float16)
+            v = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(mx.float16)
+            return q, k, v
+
+        def reference(q, k, v, Nq, Nkv, mask):
+            k_rep = mx.repeat(k, Nq // Nkv, axis=1)
+            v_rep = mx.repeat(v, Nq // Nkv, axis=1)
+            return mlx_primitives_sdpa(q, k_rep, v_rep, scale, mask=mask)
+
         try:
             for window in (None, "0"):
                 if window is None:
@@ -262,24 +283,41 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                     os.environ["MLX_SDPA_NAX_D256_WINDOW"] = window
                 for Nq, Nkv, kL in cases:
                     with self.subTest(window=window, Nq=Nq, Nkv=Nkv, kL=kL):
-                        mx.random.seed(0)
-                        q = (5e-1 * mx.random.normal(shape=(1, Nq, qL, D))).astype(
-                            mx.float16
-                        )
-                        k = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(
-                            mx.float16
-                        )
-                        v = (5e-1 * mx.random.normal(shape=(1, Nkv, kL, D))).astype(
-                            mx.float16
-                        )
-                        k_rep = mx.repeat(k, Nq // Nkv, axis=1)
-                        v_rep = mx.repeat(v, Nq // Nkv, axis=1)
-                        ref = mlx_primitives_sdpa(q, k_rep, v_rep, scale, mask="causal")
+                        q, k, v = inputs(Nq, Nkv, kL)
+                        ref = reference(q, k, v, Nq, Nkv, "causal")
                         out = mx.fast.scaled_dot_product_attention(
                             q, k, v, scale=scale, mask="causal"
                         )
                         self.assertEqual(out.shape, ref.shape)
                         self.assertTrue(mx.allclose(ref, out, atol=5e-3, rtol=5e-3))
+
+            # The window only moves the causal cells inside it, and it moves
+            # them for real: same inputs, different kernel, both correct.
+            Nq, Nkv, kL = 16, 2, 1536
+            q, k, v = inputs(Nq, Nkv, kL)
+            bool_mask = (mx.arange(qL) + (kL - qL))[:, None] >= mx.arange(kL)[None]
+            for mask, admitted in (("causal", True), (bool_mask, False)):
+                name = "causal" if isinstance(mask, str) else "bool_array"
+                with self.subTest(mask=name, Nq=Nq, Nkv=Nkv, kL=kL):
+                    ref = reference(q, k, v, Nq, Nkv, mask)
+                    outs = {}
+                    for window in ("1", "0"):
+                        os.environ["MLX_SDPA_NAX_D256_WINDOW"] = window
+                        outs[window] = mx.fast.scaled_dot_product_attention(
+                            q, k, v, scale=scale, mask=mask
+                        )
+                        self.assertEqual(
+                            is_fused(outs[window]), admitted and window == "1"
+                        )
+                        self.assertTrue(
+                            mx.allclose(ref, outs[window], atol=5e-3, rtol=5e-3)
+                        )
+                    same = mx.array_equal(
+                        outs["0"].view(mx.uint16), outs["1"].view(mx.uint16)
+                    ).item()
+                    # A routed cell must actually change kernel; an unrouted
+                    # one must be untouched, bit for bit.
+                    self.assertEqual(bool(same), not admitted)
         finally:
             os.environ.pop("MLX_SDPA_NAX_D256_WINDOW", None)
 

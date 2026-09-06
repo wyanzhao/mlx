@@ -754,10 +754,12 @@ bool ScaledDotProductAttention::use_fallback(
   const int value_head_dim = v.shape(-1);
 
   // Use headdim-split kernel when NAX is enabled and there are enough query
-  // blocks to fill the machine. For D=256 a 512-query chunk also wins while
-  // the key length stays short (the eager path's score matrices dominate),
-  // so admit that window too. MLX_SDPA_NAX_D256_WINDOW=0 restores the
-  // qL >= 1024 rule alone.
+  // blocks to fill the machine. For D=256 with a *causal* mask a 512-query
+  // chunk also wins while the key length stays short (the eager path's score
+  // matrices dominate), so admit that window too. The window is for the
+  // causal mask only: with an explicit mask array a 512-query chunk is
+  // slower fused, so those keep the unfused path below 1024 queries.
+  // MLX_SDPA_NAX_D256_WINDOW=0 restores the qL >= 1024 rule alone.
   if (metal::is_nax_available() &&
       (env::enable_tf32() || q.dtype() != float32) &&
       query_head_dim == 256 && (do_causal || has_arr_mask)) {
@@ -765,7 +767,8 @@ bool ScaledDotProductAttention::use_fallback(
     if (query_sequence_length >= 1024) {
       return false;
     }
-    if (query_sequence_length >= 512 && key_sequence_length <= 1536 &&
+    if (do_causal && query_sequence_length >= 512 &&
+        key_sequence_length <= 1536 &&
         env::get_var("MLX_SDPA_NAX_D256_WINDOW", 1) == 1) {
       return false;
     }
