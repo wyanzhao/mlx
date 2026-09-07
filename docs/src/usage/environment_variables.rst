@@ -131,9 +131,10 @@ users. Their behavior may change as the implementation evolves.
 .. envvar:: MLX_SDPA_NAX_D256_WINDOW
 
    Allow the Metal head-dim-split scaled dot-product attention kernel to take
-   causal attention with a head dimension of ``256`` and 512 to 1023 query
-   rows and at most 1536 key rows. The default is ``1``. Set it to ``0`` to restore the previous
-   routing, which uses that kernel from 1024 query rows only.
+   causal float16 or bfloat16 attention with a head dimension of ``256``,
+   512 to 1023 query rows, and at most 1536 key rows. The default is ``1``.
+   Set it to ``0`` to restore the previous routing. Float32 retains its
+   existing routing, including when TF32 is enabled.
 
 CUDA
 ----

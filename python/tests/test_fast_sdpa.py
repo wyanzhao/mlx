@@ -459,6 +459,34 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
             )
             self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
 
+    @unittest.skipIf(not mx.metal.is_available(), "Metal routing only")
+    def test_sdpa_prefill_window_float32_fallback(self):
+        if mx.default_device() == mx.cpu:
+            self.skipTest("Metal routing only")
+        mx.random.seed(0)
+        q = mx.random.normal((1, 16, 512, 256))
+        k = mx.random.normal((1, 2, 1024, 256))
+        v = mx.random.normal((1, 2, 1024, 256))
+        saved = os.environ.get("MLX_SDPA_NAX_D256_WINDOW")
+        outputs = []
+        try:
+            for value in ("0", "1"):
+                os.environ["MLX_SDPA_NAX_D256_WINDOW"] = value
+                out = mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=256**-0.5, mask="causal"
+                )
+                with io.StringIO() as graph:
+                    mx.export_to_dot(graph, output=out)
+                    self.assertNotIn("ScaledDotProductAttention", graph.getvalue())
+                mx.eval(out)
+                outputs.append(out)
+            self.assertTrue(mx.array_equal(*outputs))
+        finally:
+            if saved is None:
+                os.environ.pop("MLX_SDPA_NAX_D256_WINDOW", None)
+            else:
+                os.environ["MLX_SDPA_NAX_D256_WINDOW"] = saved
+
     def test_sdpa_vector_gqa_long(self):
         scale = 1.0
         mx.random.seed(0)
