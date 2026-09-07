@@ -378,9 +378,7 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                         mx.repeat(v.astype(mx.float32), 8, axis=1),
                         256**-0.5,
                     )
-                    out = mx.fast.scaled_dot_product_attention(
-                        q, k, v, scale=256**-0.5
-                    )
+                    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=256**-0.5)
                     self.assertTrue(mx.allclose(ref, out, atol=atol, rtol=1e-3))
 
     def test_sdpa_fully_masked(self):
