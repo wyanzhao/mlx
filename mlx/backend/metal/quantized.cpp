@@ -843,8 +843,8 @@ void qmm_nax(
   // runtime override keeps the original dispatch available as a fallback.
   bool bm32_split = transpose && B == 1 && mode == "affine" && bits == 4 &&
       group_size == 64 && x.dtype() == bfloat16 && M > 64 && M < 256 &&
-      (M % 64) != 0 &&
-      (M % 64) <= 32 && env::get_var("MLX_QMM_NAX_BM32_SPLIT", 1) > 0;
+      (M % 64) != 0 && (M % 64) <= 32 &&
+      env::get_var("MLX_QMM_NAX_BM32_SPLIT", 1) > 0;
 
   auto dispatch_part = [&](int m_part,
                            int bm_part,
