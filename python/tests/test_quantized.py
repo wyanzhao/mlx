@@ -530,6 +530,8 @@ class TestQuantized(mlx_tests.MLXTestCase):
             ("affine", 64, 4, 129, 8257, (), mx.bfloat16),  # two head blocks
             ("affine", 64, 4, 160, 8256, (), mx.bfloat16),
             ("affine", 64, 4, 193, 8256, (), mx.bfloat16),  # three head blocks
+            ("affine", 64, 4, 224, 8256, (), mx.bfloat16),  # largest split tail
+            ("affine", 64, 4, 257, 8256, (), mx.bfloat16),  # four head blocks: bypass
             ("affine", 64, 4, 81, 8256, (2,), mx.bfloat16),  # batched
             ("affine", 64, 4, 81, 8256, (), mx.float16),
             ("mxfp4", None, None, 81, 8256, (), mx.bfloat16),

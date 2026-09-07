@@ -838,10 +838,12 @@ void qmm_nax(
   // Keep complete 64-row blocks on bm=64 and dispatch a 1..32-row tail with
   // the existing bm=32 specialization. Batched kernels derive their strides
   // from the part size, so only split the unbatched path. Limit the default to
-  // the bfloat16 affine configuration covered by this optimization, while the
+  // the bfloat16 affine configuration and at most three complete head blocks.
+  // For larger M, the extra dispatch can outweigh the smaller tail tile. The
   // runtime override keeps the original dispatch available as a fallback.
   bool bm32_split = transpose && B == 1 && mode == "affine" && bits == 4 &&
-      group_size == 64 && x.dtype() == bfloat16 && M > 64 && (M % 64) != 0 &&
+      group_size == 64 && x.dtype() == bfloat16 && M > 64 && M < 256 &&
+      (M % 64) != 0 &&
       (M % 64) <= 32 && env::get_var("MLX_QMM_NAX_BM32_SPLIT", 1) > 0;
 
   auto dispatch_part = [&](int m_part,
