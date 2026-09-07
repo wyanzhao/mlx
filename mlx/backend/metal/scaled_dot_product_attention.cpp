@@ -765,8 +765,7 @@ bool ScaledDotProductAttention::use_fallback(
       return false;
     }
     if (do_causal && (q.dtype() == float16 || q.dtype() == bfloat16) &&
-        query_sequence_length >= 512 &&
-        key_sequence_length <= 1536 &&
+        query_sequence_length >= 512 && key_sequence_length <= 1536 &&
         env::get_var("MLX_SDPA_NAX_D256_WINDOW", 1) == 1) {
       return false;
     }
