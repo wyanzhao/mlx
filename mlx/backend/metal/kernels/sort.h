@@ -733,3 +733,91 @@ mb_block_merge(
     }
   }
 }
+
+// Edge selection is bounded to eight rounds by the host dispatch.
+template <typename T, typename U, bool ARG_PARTITION>
+[[kernel, max_total_threads_per_threadgroup(256)]] void edge_partition(
+    const device T* inp [[buffer(0)]],
+    device U* out [[buffer(1)]],
+    constant int& size [[buffer(2)]],
+    constant int& kth [[buffer(3)]],
+    constant int64_t& axis_stride [[buffer(4)]],
+    constant int64_t& out_axis_stride [[buffer(5)]],
+    constant int& ndim [[buffer(6)]],
+    constant int* shape [[buffer(7)]],
+    constant int64_t* strides [[buffer(8)]],
+    constant int64_t* out_strides [[buffer(9)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint threads [[threads_per_threadgroup]]) {
+  inp += elem_to_loc<int64_t>(row, shape, strides, ndim);
+  out += elem_to_loc<int64_t>(row, shape, out_strides, ndim);
+  bool active = tid < uint(size);
+  T value = active ? inp[int64_t(tid) * axis_stride] : T(0);
+  float f = float(value);
+  // Collapse zero signs and NaN payloads only in the comparison key.
+  uint bits = as_type<uint>(f == 0.0f ? 0.0f : f);
+  uint key = isnan(f) ? 0xffffffffu
+                        : ((bits & 0x80000000u) ? ~bits : bits ^ 0x80000000u);
+  bool upper = size - kth < kth + 1;
+  int count = upper ? size - kth : kth + 1;
+  uint groups = threads / 32;
+  threadgroup uint keys[8];
+  threadgroup uint indices[8];
+  threadgroup uint winner;
+  for (int i = 0; i < count; ++i) {
+    uint candidate = active ? key : (upper ? 0u : 0xffffffffu);
+    uint best = upper ? simd_max(candidate) : simd_min(candidate);
+    // Index ties match the stable ascending order, including NaNs and zeros.
+    uint index = active && key == best ? (upper ? uint(size) - 1 - tid : tid)
+                                     : 0xffffffffu;
+    index = simd_min(index);
+    if (lane == 0) {
+      keys[sg] = best;
+      indices[sg] = index;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+      uint group_key = lane < groups ? keys[lane]
+                                    : (upper ? 0u : 0xffffffffu);
+      uint group_best = upper ? simd_max(group_key) : simd_min(group_key);
+      uint group_index = lane < groups && group_key == group_best
+          ? indices[lane] : 0xffffffffu;
+      uint chosen = simd_min(group_index);
+      if (lane == 0) {
+        winner = upper ? uint(size) - 1 - chosen : chosen;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == winner) {
+      int position = upper ? size - 1 - i : i;
+      if constexpr (ARG_PARTITION) {
+        out[int64_t(position) * out_axis_stride] = tid;
+      } else {
+        out[int64_t(position) * out_axis_stride] = value;
+      }
+      active = false;
+    }
+    // All threads must read winner before the next iteration changes it.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  uint prefix = simd_prefix_exclusive_sum(uint(active));
+  uint total = simd_sum(uint(active));
+  if (lane == 0) {
+    indices[sg] = total;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint g = 0; g < sg; ++g) {
+    prefix += indices[g];
+  }
+  if (active) {
+    uint position = prefix + (upper ? 0 : count);
+    if constexpr (ARG_PARTITION) {
+      out[int64_t(position) * out_axis_stride] = tid;
+    } else {
+      out[int64_t(position) * out_axis_stride] = value;
+    }
+  }
+}

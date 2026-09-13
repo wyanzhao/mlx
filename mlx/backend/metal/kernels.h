@@ -73,6 +73,13 @@ MTL::ComputePipelineState* get_scan_kernel(
     const array& in,
     const array& out);
 
+MTL::ComputePipelineState* get_partition_kernel(
+    metal::Device& d,
+    const std::string& kernel_name,
+    const array& in,
+    const array& out,
+    bool argpartition);
+
 MTL::ComputePipelineState* get_sort_kernel(
     metal::Device& d,
     const std::string& kernel_name,

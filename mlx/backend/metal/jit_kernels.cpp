@@ -395,6 +395,26 @@ MTL::ComputePipelineState* get_scan_kernel(
   return d.get_kernel(kernel_name, lib);
 }
 
+MTL::ComputePipelineState* get_partition_kernel(
+    metal::Device& d,
+    const std::string& kernel_name,
+    const array& in,
+    const array& out,
+    bool argpartition) {
+  auto lib = d.get_library(kernel_name, [&]() {
+    std::ostringstream source;
+    source << metal::utils() << metal::sort();
+    source << get_template_definition(
+        kernel_name,
+        "edge_partition",
+        get_type_string(in.dtype()),
+        get_type_string(out.dtype()),
+        argpartition ? "true" : "false");
+    return source.str();
+  });
+  return d.get_kernel(kernel_name, lib);
+}
+
 MTL::ComputePipelineState* get_sort_kernel(
     metal::Device& d,
     const std::string& kernel_name,

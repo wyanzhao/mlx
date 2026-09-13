@@ -80,3 +80,11 @@ instantiate_multi_block_sort_base(bfloat16, bfloat16_t)
 instantiate_multi_block_sort_long(uint64, uint64_t)
 instantiate_multi_block_sort_long(int64, int64_t)
 instantiate_multi_block_sort_long(complex64, complex64_t) // clang-format on
+
+#define instantiate_edge_partition(name, type) \
+  instantiate_kernel("edge_partition_" #name, edge_partition, type, type, false) \
+  instantiate_kernel("edge_argpartition_" #name, edge_partition, type, uint32_t, true)
+
+instantiate_edge_partition(float32, float)
+instantiate_edge_partition(float16, half)
+instantiate_edge_partition(bfloat16, bfloat16_t)

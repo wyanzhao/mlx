@@ -90,6 +90,15 @@ MTL::ComputePipelineState* get_scan_kernel(
   return d.get_kernel(kernel_name);
 }
 
+MTL::ComputePipelineState* get_partition_kernel(
+    metal::Device& d,
+    const std::string& kernel_name,
+    const array&,
+    const array&,
+    bool) {
+  return d.get_kernel(kernel_name);
+}
+
 MTL::ComputePipelineState* get_sort_kernel(
     metal::Device& d,
     const std::string& kernel_name,

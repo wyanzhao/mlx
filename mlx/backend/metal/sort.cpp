@@ -1,6 +1,9 @@
 // Copyright © 2023-2024 Apple Inc.
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/metal/device.h"
@@ -11,6 +14,62 @@
 namespace mlx::core {
 
 namespace {
+
+bool single_block_partition(
+    const Stream& s,
+    metal::Device& d,
+    const array& in,
+    array& out,
+    int axis,
+    int kth,
+    bool argpartition) {
+  const char* enabled = std::getenv("MLX_METAL_EDGE_PARTITION");
+  int size = in.shape(axis);
+  if (!enabled || std::strcmp(enabled, "1") != 0 || out.size() == 0 ||
+      size < 32 || size > 256 || std::min(kth + 1, size - kth) > 8 ||
+      (in.dtype() != float32 && in.dtype() != float16 &&
+       in.dtype() != bfloat16)) {
+    return false;
+  }
+  auto shape = in.shape();
+  auto strides = in.strides();
+  auto out_strides = out.strides();
+  int64_t axis_stride = strides[axis];
+  int64_t out_axis_stride = out_strides[axis];
+  shape.erase(shape.begin() + axis);
+  strides.erase(strides.begin() + axis);
+  out_strides.erase(out_strides.begin() + axis);
+  int ndim = shape.size();
+  if (shape.empty()) {
+    shape = {1};
+    strides = {0};
+    out_strides = {0};
+  }
+  std::string name = argpartition ? "edge_argpartition_" : "edge_partition_";
+  name += type_to_name(in);
+  auto kernel = get_partition_kernel(d, name, in, out, argpartition);
+  auto& encoder = metal::get_command_encoder(s);
+  encoder.set_compute_pipeline_state(kernel);
+  encoder.set_input_array(in, 0);
+  encoder.set_output_array(out, 1);
+  encoder.set_bytes(size, 2);
+  encoder.set_bytes(kth, 3);
+  encoder.set_bytes(axis_stride, 4);
+  encoder.set_bytes(out_axis_stride, 5);
+  encoder.set_bytes(ndim, 6);
+  encoder.set_vector_bytes(shape, 7);
+  encoder.set_vector_bytes(strides, 8);
+  encoder.set_vector_bytes(out_strides, 9);
+  encoder.dispatch_threadgroups(
+      MTL::Size(in.size() / size, 1, 1),
+      MTL::Size(((size + 31) / 32) * 32, 1, 1));
+  const char* trace = std::getenv("MLX_METAL_EDGE_PARTITION_TRACE");
+  if (trace && std::strcmp(trace, "1") == 0) {
+    std::cerr << "[edge_partition] pipeline=" << name << " size=" << size
+              << " kth=" << kth << " rows=" << in.size() / size << '\n';
+  }
+  return true;
+}
 
 void single_block_sort(
     const Stream& s,
@@ -344,7 +403,6 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 
 void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // We direct arg partition to sort for now
   assert(inputs.size() == 1);
 
   out.set_data(allocator::malloc(out.nbytes()));
@@ -353,11 +411,12 @@ void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& d = metal::device(s.device);
   auto& in = inputs[0];
 
-  gpu_merge_sort(s, d, in, out, axis_, true);
+  if (!single_block_partition(s, d, in, out, axis_, kth_, true)) {
+    gpu_merge_sort(s, d, in, out, axis_, true);
+  }
 }
 
 void Partition::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // We direct partition to sort for now
   assert(inputs.size() == 1);
 
   out.set_data(allocator::malloc(out.nbytes()));
@@ -366,7 +425,9 @@ void Partition::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& d = metal::device(s.device);
   auto& in = inputs[0];
 
-  gpu_merge_sort(s, d, in, out, axis_, false);
+  if (!single_block_partition(s, d, in, out, axis_, kth_, false)) {
+    gpu_merge_sort(s, d, in, out, axis_, false);
+  }
 }
 
 void SearchSorted::eval_gpu(const std::vector<array>& inputs, array& out) {
