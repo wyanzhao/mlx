@@ -48,6 +48,10 @@ bool single_block_partition(
   std::string name = argpartition ? "edge_argpartition_" : "edge_partition_";
   name += type_to_name(in);
   auto kernel = get_partition_kernel(d, name, in, out, argpartition);
+  int threads = ((size + 31) / 32) * 32;
+  if (kernel->maxTotalThreadsPerThreadgroup() < threads) {
+    return false;
+  }
   auto& encoder = metal::get_command_encoder(s);
   encoder.set_compute_pipeline_state(kernel);
   encoder.set_input_array(in, 0);
@@ -61,8 +65,7 @@ bool single_block_partition(
   encoder.set_vector_bytes(strides, 8);
   encoder.set_vector_bytes(out_strides, 9);
   encoder.dispatch_threadgroups(
-      MTL::Size(in.size() / size, 1, 1),
-      MTL::Size(((size + 31) / 32) * 32, 1, 1));
+      MTL::Size(in.size() / size, 1, 1), MTL::Size(threads, 1, 1));
   const char* trace = std::getenv("MLX_METAL_EDGE_PARTITION_TRACE");
   if (trace && std::strcmp(trace, "1") == 0) {
     std::cerr << "[edge_partition] pipeline=" << name << " size=" << size

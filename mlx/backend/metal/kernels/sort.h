@@ -760,7 +760,7 @@ template <typename T, typename U, bool ARG_PARTITION>
   // Collapse zero signs and NaN payloads only in the comparison key.
   uint bits = as_type<uint>(f == 0.0f ? 0.0f : f);
   uint key = isnan(f) ? 0xffffffffu
-                        : ((bits & 0x80000000u) ? ~bits : bits ^ 0x80000000u);
+                      : ((bits & 0x80000000u) ? ~bits : bits ^ 0x80000000u);
   bool upper = size - kth < kth + 1;
   int count = upper ? size - kth : kth + 1;
   uint groups = threads / 32;
@@ -772,7 +772,7 @@ template <typename T, typename U, bool ARG_PARTITION>
     uint best = upper ? simd_max(candidate) : simd_min(candidate);
     // Index ties match the stable ascending order, including NaNs and zeros.
     uint index = active && key == best ? (upper ? uint(size) - 1 - tid : tid)
-                                     : 0xffffffffu;
+                                       : 0xffffffffu;
     index = simd_min(index);
     if (lane == 0) {
       keys[sg] = best;
@@ -780,11 +780,11 @@ template <typename T, typename U, bool ARG_PARTITION>
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (sg == 0) {
-      uint group_key = lane < groups ? keys[lane]
-                                    : (upper ? 0u : 0xffffffffu);
+      uint group_key = lane < groups ? keys[lane] : (upper ? 0u : 0xffffffffu);
       uint group_best = upper ? simd_max(group_key) : simd_min(group_key);
       uint group_index = lane < groups && group_key == group_best
-          ? indices[lane] : 0xffffffffu;
+          ? indices[lane]
+          : 0xffffffffu;
       uint chosen = simd_min(group_index);
       if (lane == 0) {
         winner = upper ? uint(size) - 1 - chosen : chosen;
