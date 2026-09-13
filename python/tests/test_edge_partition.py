@@ -23,6 +23,7 @@ class TestEdgePartition(mlx_tests.MLXTestCase):
         values = np.array(mx.partition(x, kth, axis).astype(mx.float32))
         indices = np.array(mx.argpartition(x, kth, axis))
         gathered = np.take_along_axis(original, indices, axis)
+        np.testing.assert_array_equal(values.view(np.uint32), gathered.view(np.uint32))
         expected = np.sort(original, axis=axis)
         expected_indices = np.broadcast_to(
             np.arange(n), np.moveaxis(original, axis, -1).shape
