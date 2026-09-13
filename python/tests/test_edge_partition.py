@@ -68,6 +68,18 @@ class TestEdgePartition(mlx_tests.MLXTestCase):
                             ):
                                 self.check_partition(x, kth)
 
+    def test_partial_stripes_and_selection_counts(self):
+        rng = np.random.default_rng(19)
+        with patch.dict(os.environ, {"MLX_METAL_EDGE_PARTITION": "1"}):
+            for dtype in (mx.float32, mx.float16, mx.bfloat16):
+                for width in (63, 95, 191, 255):
+                    x = mx.array(rng.integers(-3, 4, (2, width * 2, 3)), dtype)
+                    view = x[:, ::-2, :]
+                    for count in range(3, 8):
+                        for kth in (count - 1, -count):
+                            with self.subTest(dtype=dtype, width=width, kth=kth):
+                                self.check_partition(view, kth, axis=1)
+
     def test_special_values(self):
         bits = np.array(
             [
