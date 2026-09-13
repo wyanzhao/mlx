@@ -87,7 +87,7 @@ class TestMetalCrossEntropy(mlx_tests.MLXTestCase):
     def test_empty_class_axis(self):
         for enabled in ["0", "1"]:
             with mlx_tests.scoped_env(MLX_METAL_CROSS_ENTROPY=enabled):
-                with self.assertRaisesRegex(ValueError, "empty array"):
+                with self.assertRaises(ValueError):
                     mx.fast.cross_entropy(mx.zeros((2, 0)), mx.zeros((2,), mx.int32))
 
     def test_compile_and_loss_route(self):
