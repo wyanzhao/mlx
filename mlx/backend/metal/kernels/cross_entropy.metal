@@ -19,22 +19,29 @@ template <typename T, bool backward>
     uint lane [[thread_index_in_simdgroup]],
     uint simd [[simdgroup_index_in_threadgroup]]) {
   threadgroup float partial[32];
+  threadgroup bool nan_partial[32];
   threadgroup float row_max;
   threadgroup float row_sum;
   x += size_t(row) * classes;
   float max_value = -INFINITY;
+  bool has_nan = false;
   for (size_t c = tid; c < size_t(classes); c += threads) {
-    max_value = max(max_value, float(x[c]));
+    float value = float(x[c]);
+    max_value = max(max_value, value);
+    has_nan |= isnan(value);
   }
   max_value = simd_max(max_value);
+  has_nan = simd_any(has_nan);
   if (lane == 0) {
     partial[simd] = max_value;
+    nan_partial[simd] = has_nan;
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (simd == 0) {
     max_value = simd_max(lane < threads / 32 ? partial[lane] : -INFINITY);
+    has_nan = simd_any(lane < threads / 32 && nan_partial[lane]);
     if (lane == 0) {
-      row_max = max_value;
+      row_max = has_nan ? NAN : max_value;
     }
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);

@@ -165,6 +165,35 @@ class TestMetalCrossEntropy(mlx_tests.MLXTestCase):
         self.assertNotIn("CrossEntropy", graph.getvalue())
         mx.eval(out)
 
+    def test_nan_with_infinite_maximum(self):
+        for dtype in [mx.float32, mx.float16, mx.bfloat16]:
+            for width in [3, 33, 257]:
+                for nan_index in [0, width - 1]:
+                    with self.subTest(dtype=dtype, width=width, nan_index=nan_index):
+                        values = np.zeros((1, width), dtype=np.float32)
+                        values[0, width - 1 if nan_index == 0 else 0] = np.inf
+                        values[0, nan_index] = np.nan
+                        x = mx.array(values, dtype)
+                        y = mx.array([1])
+                        out, grad = mx.vjp(
+                            lambda a: mx.fast.cross_entropy(a, y), [x], [mx.ones((1,))]
+                        )
+                        with mlx_tests.scoped_env(MLX_METAL_CROSS_ENTROPY="0"):
+                            ref, ref_grad = mx.vjp(
+                                lambda a: mx.fast.cross_entropy(a, y),
+                                [x],
+                                [mx.ones((1,))],
+                            )
+                        self.assertTrue(mx.all(mx.isnan(out[0])).item())
+                        self.assertTrue(mx.all(mx.isnan(grad[0])).item())
+                        np.testing.assert_array_equal(
+                            np.array(out[0]), np.array(ref[0])
+                        )
+                        np.testing.assert_array_equal(
+                            np.array(grad[0].astype(mx.float32)),
+                            np.array(ref_grad[0].astype(mx.float32)),
+                        )
+
     def test_nonfinite_and_invalid_targets(self):
         x = mx.array(
             [
