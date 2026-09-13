@@ -11,7 +11,8 @@ namespace mlx::core::fast {
 
 bool CrossEntropy::use_fallback(Stream s) {
   const char* enabled = std::getenv("MLX_METAL_CROSS_ENTROPY");
-  return s.device == Device::cpu || !enabled || std::string_view(enabled) != "1";
+  return s.device == Device::cpu || !enabled ||
+      std::string_view(enabled) != "1";
 }
 
 namespace {
@@ -35,19 +36,20 @@ void cross_entropy_eval(
   };
   auto x = contiguous(inputs[0]);
   auto y = contiguous(inputs[1]);
+  auto g = backward ? contiguous(inputs[3]) : y;
   auto& d = metal::device(s.device);
   auto name = std::string(backward ? "cross_entropy_vjp_" : "cross_entropy_") +
       type_to_name(x);
   auto kernel = d.get_kernel(name);
   int classes = x.shape(-1);
-  size_t threads = std::min<size_t>(256, kernel->maxTotalThreadsPerThreadgroup());
+  size_t threads =
+      std::min<size_t>(256, kernel->maxTotalThreadsPerThreadgroup());
   encoder.set_compute_pipeline_state(kernel);
   encoder.set_input_array(x, 0);
   encoder.set_input_array(y, 1);
   encoder.set_output_array(out, 2);
   encoder.set_bytes(classes, 3);
   if (backward) {
-    auto g = contiguous(inputs[3]);
     encoder.set_input_array(g, 4);
   }
   encoder.dispatch_threads(
