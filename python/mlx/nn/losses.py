@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 import math
+import os
 from typing import Literal, Optional, get_args
 
 import mlx.core as mx
@@ -96,7 +97,8 @@ def cross_entropy(
         )
 
     use_fast = (
-        mx.cuda.is_available()
+        (mx.cuda.is_available() or (mx.metal.is_available()
+         and os.environ.get("MLX_METAL_CROSS_ENTROPY") == "1"))
         and mx.default_device() == mx.gpu
         and not targets_as_probs
         and label_smoothing == 0

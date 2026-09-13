@@ -230,7 +230,9 @@ array cross_entropy(
 
   auto passed_targets = astype(targets, int32, s);
 
-  if (!CrossEntropy::use_fallback(s)) {
+  if (!CrossEntropy::use_fallback(s) && logits.shape(-1) > 0 &&
+      (logits.dtype() == float32 || logits.dtype() == float16 ||
+       logits.dtype() == bfloat16)) {
     return array(
         expected,
         float32,

@@ -48,6 +48,7 @@ function(build_kernel KERNEL)
 endfunction(build_kernel)
 
 build_kernel(arg_reduce)
+build_kernel(cross_entropy)
 build_kernel(conv steel/conv/params.h)
 build_kernel(dot)
 build_kernel(layer_norm)

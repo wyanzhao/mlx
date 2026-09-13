@@ -144,6 +144,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/scan.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/slicing.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/softmax.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/sort.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/reduce.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/ternary.cpp
