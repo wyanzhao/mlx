@@ -220,8 +220,10 @@ array cross_entropy(
 
   auto s = to_stream(s_);
   auto fallback = [s](const std::vector<array>& inputs) {
-    auto& x = inputs[0];
-    auto& y = inputs[1];
+    auto x = astype(inputs[0], promote_types(inputs[0].dtype(), float32), s);
+    auto maximum = stop_gradient(max(x, -1, /* keepdims= */ true, s), s);
+    x = subtract(x, where(isinf(maximum, s), array(0.0f), maximum, s), s);
+    auto y = stop_gradient(inputs[1], s);
     auto score =
         squeeze(take_along_axis(x, expand_dims(y, -1, s), -1, s), -1, s);
     auto loss = subtract(logsumexp(x, -1, /* keepdims= */ false, s), score, s);
@@ -261,20 +263,19 @@ std::vector<array> CrossEntropy::vjp(
   auto s = stream();
   auto fallback = [s](const std::vector<array>& inputs) {
     auto& x = inputs[0];
-    auto& y = inputs[1];
-    auto& loss = inputs[2];
+    auto y = stop_gradient(inputs[1], s);
     auto& g = inputs[3];
-
-    auto score =
-        squeeze(take_along_axis(x, expand_dims(y, -1, s), -1, s), -1, s);
-    auto lse = add(loss, astype(score, float32, s), s);
-    auto p =
-        exp(subtract(astype(x, float32, s), expand_dims(lse, -1, s), s), s);
+    auto p = softmax(astype(x, float32, s), -1, /* precise= */ true, s);
+    auto normalized_y = where(
+        less(y, array(0, y.dtype()), s),
+        add(y, array(x.shape(-1), y.dtype()), s),
+        y,
+        s);
     Shape class_shape(x.ndim(), 1);
     class_shape.back() = x.shape(-1);
     auto onehot = astype(
         equal(
-            expand_dims(y, -1, s),
+            expand_dims(normalized_y, -1, s),
             reshape(arange(x.shape(-1), y.dtype(), s), class_shape, s),
             s),
         float32,

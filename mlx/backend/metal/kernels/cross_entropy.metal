@@ -80,10 +80,11 @@ template <typename T, bool backward>
   }
 }
 
-#define instantiate_cross_entropy(name, type) \
+#define instantiate_cross_entropy(name, type)                            \
   instantiate_kernel("cross_entropy_" #name, cross_entropy, type, false) \
-  instantiate_kernel("cross_entropy_vjp_" #name, cross_entropy, type, true)
+      instantiate_kernel(                                                \
+          "cross_entropy_vjp_" #name, cross_entropy, type, true)
 
 instantiate_cross_entropy(float32, float)
-instantiate_cross_entropy(float16, half)
-instantiate_cross_entropy(bfloat16, bfloat16_t)
+    instantiate_cross_entropy(float16, half)
+        instantiate_cross_entropy(bfloat16, bfloat16_t)
