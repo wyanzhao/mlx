@@ -20,8 +20,16 @@ class TestEdgePartition(mlx_tests.MLXTestCase):
         axis %= original.ndim
         n = original.shape[axis]
         k = kth % n
-        values = np.array(mx.partition(x, kth, axis).astype(mx.float32))
+        partitioned = mx.partition(x, kth, axis)
+        values = np.array(partitioned.astype(mx.float32))
         indices = np.array(mx.argpartition(x, kth, axis))
+        if x.dtype in (mx.float32, mx.float16):
+            bits = np.uint32 if x.dtype == mx.float32 else np.uint16
+            native_input = np.array(x).view(bits)
+            native_output = np.array(partitioned).view(bits)
+            np.testing.assert_array_equal(
+                native_output, np.take_along_axis(native_input, indices, axis)
+            )
         gathered = np.take_along_axis(original, indices, axis)
         np.testing.assert_array_equal(values.view(np.uint32), gathered.view(np.uint32))
         expected = np.sort(original, axis=axis)
@@ -104,6 +112,18 @@ class TestEdgePartition(mlx_tests.MLXTestCase):
                     self.check_partition(
                         mx.array(rng.integers(-5, 5, (8, width)), dtype), kth
                     )
+
+    def test_complex_fallback(self):
+        rng = np.random.default_rng(18)
+        x = mx.array(rng.normal(size=(8, 64)) + 1j * rng.normal(size=(8, 64)))
+        with patch.dict(os.environ, {"MLX_METAL_EDGE_PARTITION": "1"}):
+            for kth in (0, 7, -1, -8):
+                np.testing.assert_array_equal(
+                    np.array(mx.partition(x, kth)), np.array(mx.sort(x))
+                )
+                np.testing.assert_array_equal(
+                    np.array(mx.argpartition(x, kth)), np.array(mx.argsort(x))
+                )
 
     def test_topk_and_transforms(self):
         rng = np.random.default_rng(16)
