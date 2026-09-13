@@ -48,7 +48,7 @@ bool single_block_partition(
   std::string name = argpartition ? "edge_argpartition_" : "edge_partition_";
   name += type_to_name(in);
   auto kernel = get_partition_kernel(d, name, in, out, argpartition);
-  int threads = ((size + 31) / 32) * 32;
+  int threads = 32;
   if (kernel->maxTotalThreadsPerThreadgroup() < threads) {
     return false;
   }
