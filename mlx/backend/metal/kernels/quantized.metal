@@ -181,5 +181,5 @@
 
 instantiate_quantized_all() // clang-format on
 
-instantiate_quantized_batched(affine_qmv_fast_tail, bfloat16_t, 32, 4, 0)
-instantiate_quantized_batched(affine_qmv_fast_tail, bfloat16_t, 64, 4, 0)
+instantiate_quantized_batched(affine_qmv_simd_tail, bfloat16_t, 32, 4, 0)
+instantiate_quantized_batched(affine_qmv_simd_tail, bfloat16_t, 64, 4, 0)

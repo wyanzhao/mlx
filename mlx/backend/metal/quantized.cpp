@@ -491,7 +491,7 @@ void qmv(
       x.dtype() == bfloat16 && bits == 4 &&
       ((N == 4 && (group_size == 32 || group_size == 64)) ||
        (N == 12 && group_size == 64));
-  const char* func = fast ? "qmv_fast" : (fast_tail ? "qmv_fast_tail" : "qmv");
+  const char* func = fast ? "qmv_fast" : (fast_tail ? "qmv_simd_tail" : "qmv");
   // A narrower output tile reduces register pressure for large
   // floating-point quantized matrix-vector products on M5 Max GPUs.
   bool use_narrow_qmv = fast && N >= 4096 && d.get_architecture_gen() == 17 &&

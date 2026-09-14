@@ -753,7 +753,7 @@ METAL_FUNC void qmv_quad_impl(
   }
 }
 
-template <typename T, int group_size, int bits, bool aligned_N = true>
+template <typename T, int group_size, int bits, bool guard_simdgroup = false>
 METAL_FUNC void qmv_fast_impl(
     const device uint32_t* w,
     const device T* scales,
@@ -787,7 +787,8 @@ METAL_FUNC void qmv_fast_impl(
   const int out_row = tid.y * (num_simdgroups * results_per_simdgroup) +
       simd_gid * results_per_simdgroup;
 
-  if constexpr (!aligned_N) {
+  // Guarded calls require complete four-row SIMDgroups (N divisible by 4).
+  if constexpr (guard_simdgroup) {
     if (out_row >= out_vec_size) {
       return;
     }
@@ -803,9 +804,6 @@ METAL_FUNC void qmv_fast_impl(
     U sum = load_vector<T, U, values_per_thread, bits>(x, x_thread);
 
     for (int row = 0; row < results_per_simdgroup; row++) {
-      if (!aligned_N && out_row + row >= out_vec_size) {
-        break;
-      }
       auto wl = (const device uint8_t*)(ws + row * in_vec_size_w);
       const device T* sl = scales + row * in_vec_size_g;
       const device T* bl = biases + row * in_vec_size_g;
@@ -822,9 +820,6 @@ METAL_FUNC void qmv_fast_impl(
   }
 
   for (int row = 0; row < results_per_simdgroup; row++) {
-    if (!aligned_N && out_row + row >= out_vec_size) {
-      break;
-    }
     result[row] = simd_sum(result[row]);
     if (simd_lid == 0) {
       y[row] = static_cast<T>(result[row]);
@@ -1674,7 +1669,7 @@ template <
     bool batched,
     bool has_global_scale = false,
     int results_per_simdgroup = 4>
-[[kernel]] void affine_qmv_fast_tail(
+[[kernel]] void affine_qmv_simd_tail(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
     const device T* biases [[buffer(2)]],
@@ -1712,7 +1707,7 @@ template <
         b_strides,
         tid);
   }
-  qmv_fast_impl<T, group_size, bits, false>(
+  qmv_fast_impl<T, group_size, bits, true>(
       w,
       scales,
       biases,
