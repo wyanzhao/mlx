@@ -487,10 +487,10 @@ void qmv(
   bool fast = N % bn == 0 && K % qmv_fast_k_alignment(bits) == 0;
   const char* tail_switch = std::getenv("MLX_METAL_QMV_FAST_TAIL");
   bool fast_tail = tail_switch && std::string_view(tail_switch) == "1" &&
-      mode == "affine" && M == 1 && B == 1 && N < 16 && N % 8 != 0 &&
+      mode == "affine" && M == 1 && B == 1 && K == 10240 &&
       x.dtype() == bfloat16 && bits == 4 &&
-      (group_size == 32 || group_size == 64) &&
-      K % qmv_fast_k_alignment(bits) == 0;
+      ((N == 4 && (group_size == 32 || group_size == 64)) ||
+       (N == 12 && group_size == 64));
   const char* func = fast ? "qmv_fast" : (fast_tail ? "qmv_fast_tail" : "qmv");
   // A narrower output tile reduces register pressure for large
   // floating-point quantized matrix-vector products on M5 Max GPUs.
