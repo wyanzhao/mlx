@@ -1,5 +1,8 @@
 // Copyright © 2023-2026 Apple Inc.
 
+#include <cstdlib>
+#include <string_view>
+
 #include "mlx/backend/common/quantized.h"
 #include "mlx/backend/common/broadcasting.h"
 #include "mlx/backend/common/compiled.h"
@@ -482,6 +485,13 @@ void qmv(
   kname.reserve(64);
   std::string type_string = get_type_string(x.dtype());
   bool fast = N % bn == 0 && K % qmv_fast_k_alignment(bits) == 0;
+  const char* tail_switch = std::getenv("MLX_METAL_QMV_FAST_TAIL");
+  bool fast_tail = tail_switch && std::string_view(tail_switch) == "1" &&
+      mode == "affine" && M == 1 && B == 1 && N < 16 && N % 8 != 0 &&
+      x.dtype() == bfloat16 && bits == 4 &&
+      (group_size == 32 || group_size == 64) &&
+      K % qmv_fast_k_alignment(bits) == 0;
+  const char* func = fast ? "qmv_fast" : (fast_tail ? "qmv_fast_tail" : "qmv");
   // A narrower output tile reduces register pressure for large
   // floating-point quantized matrix-vector products on M5 Max GPUs.
   bool use_narrow_qmv = fast && N >= 4096 && d.get_architecture_gen() == 17 &&
@@ -493,7 +503,7 @@ void qmv(
 
   concatenate(
       kname,
-      mode + (fast ? "_qmv_fast_" : "_qmv_"),
+      mode + "_" + func + "_",
       type_string,
       "_gs_",
       group_size,
@@ -505,7 +515,7 @@ void qmv(
   auto kernel = get_quantized_kernel_wrapped(
       d,
       kname,
-      (fast ? "qmv_fast" : "qmv"),
+      func,
       mode,
       type_string,
       group_size,

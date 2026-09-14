@@ -20,6 +20,44 @@ def is_m1_mac():
 
 
 class TestQuantized(mlx_tests.MLXTestCase):
+    @unittest.skipUnless(mx.metal.is_available(), "Metal required")
+    def test_qmv_fast_tail(self):
+        previous = os.environ.get("MLX_METAL_QMV_FAST_TAIL")
+        try:
+            for n, k, gs in product(range(1, 18), [512, 1024, 10240], [32, 64]):
+                with self.subTest(n=n, k=k, group_size=gs):
+                    x = (
+                        mx.random.normal((1, k), key=mx.random.key(1)) / k**0.5
+                    ).astype(mx.bfloat16)
+                    w = (
+                        mx.random.normal((n, k), key=mx.random.key(2)) / k**0.5
+                    ).astype(mx.bfloat16)
+                    q, s, b = mx.quantize(w, group_size=gs, bits=4)
+                    mx.eval(x, q, s, b)
+                    reference_w = mx.dequantize(
+                        q, s, b, group_size=gs, bits=4, stream=mx.cpu
+                    )
+                    reference = mx.matmul(
+                        x.astype(mx.float32),
+                        reference_w.astype(mx.float32).T,
+                        stream=mx.cpu,
+                    )
+                    results = []
+                    for enabled in ["0", "1", "0"]:
+                        os.environ["MLX_METAL_QMV_FAST_TAIL"] = enabled
+                        y = mx.quantized_matmul(x, q, s, b, group_size=gs, bits=4)
+                        mx.eval(y)
+                        self.assertLess((y - reference).abs().max().item(), 1e-3)
+                        results.append(y)
+                    self.assertTrue(mx.array_equal(results[0], results[2]).item())
+                    if n in [8, 16, 17]:
+                        self.assertTrue(mx.array_equal(results[0], results[1]).item())
+        finally:
+            if previous is None:
+                os.environ.pop("MLX_METAL_QMV_FAST_TAIL", None)
+            else:
+                os.environ["MLX_METAL_QMV_FAST_TAIL"] = previous
+
     def test_quantize_dequantize(self):
         w = mx.random.normal(shape=(128, 512))
         for gs in [32, 64, 128]:
