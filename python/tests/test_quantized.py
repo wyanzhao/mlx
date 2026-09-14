@@ -21,6 +21,28 @@ def is_m1_mac():
 
 class TestQuantized(mlx_tests.MLXTestCase):
     @unittest.skipUnless(mx.metal.is_available(), "Metal required")
+    def test_qmv_affine_bias_sum_precision(self):
+        for n, k, gs, dtype, sign in product(
+            [1, 4, 8, 12, 16],
+            [64, 96, 128, 256, 512, 10240],
+            [32, 64, 128],
+            [mx.bfloat16, mx.float16, mx.float32],
+            [-1, 1],
+        ):
+            if k % gs:
+                continue
+            with self.subTest(n=n, k=k, gs=gs, dtype=dtype, sign=sign):
+                denom = 2048 if dtype == mx.float16 else 256
+                x = mx.tile(mx.array([1, 1 / denom, -1, 0], dtype), k // 4)
+                x = (sign * x).reshape(1, k)
+                q = mx.zeros((n, k // 8), mx.uint32)
+                scale = mx.zeros((n, k // gs), dtype)
+                bias = mx.ones((n, k // gs), dtype)
+                y = mx.quantized_matmul(x, q, scale, bias, group_size=gs, bits=4)
+                expected = mx.full((1, n), sign * k / (4 * denom), dtype)
+                self.assertTrue(mx.array_equal(y, expected).item())
+
+    @unittest.skipUnless(mx.metal.is_available(), "Metal required")
     def test_qmv_fast_tail(self):
         previous = os.environ.get("MLX_METAL_QMV_FAST_TAIL")
         try:
