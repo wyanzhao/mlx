@@ -42,6 +42,39 @@ class TestQuantized(mlx_tests.MLXTestCase):
                 expected = mx.full((1, n), sign * k / (4 * denom), dtype)
                 self.assertTrue(mx.array_equal(y, expected).item())
 
+    @unittest.skipUnless(mx.metal.is_available(), "Metal required")
+    def test_qmv_fast_rows(self):
+        # Output sizes that are not a multiple of 8 with an aligned input size.
+        # "vector" has one input row, "batched" two weight batches; "matrix" has
+        # two input rows and reaches qmv on GPUs that do not use qmv_wide.
+        for n, k, bits, gs, dtype, layout in product(
+            [1, 3, 4, 5, 12, 17],
+            [512, 1024],
+            [2, 3, 4, 5, 6, 8],
+            [32, 64],
+            [mx.float32, mx.float16, mx.bfloat16],
+            ["vector", "matrix", "batched"],
+        ):
+            # Half-precision inputs are summed exactly only for 4 and 8 bits.
+            if dtype != mx.float32 and bits not in (4, 8):
+                continue
+            with self.subTest(n=n, k=k, bits=bits, gs=gs, dtype=dtype, layout=layout):
+                key = mx.random.key(n * 7 + k + bits)
+                w_shape = (2, n, k) if layout == "batched" else (n, k)
+                x_shape = (1, k) if layout == "vector" else (2, 1, k)
+                w = mx.random.normal(w_shape, key=key) / k**0.5
+                x = mx.random.normal(x_shape, key=mx.random.split(key)[0])
+                x = (x / k**0.5).astype(dtype)
+                q, s, b = mx.quantize(w.astype(dtype), group_size=gs, bits=bits)
+                w_hat = mx.dequantize(q, s, b, group_size=gs, bits=bits)
+                y_hat = x.astype(mx.float32) @ mx.swapaxes(
+                    w_hat.astype(mx.float32), -1, -2
+                )
+                y = mx.quantized_matmul(x, q, s, b, group_size=gs, bits=bits)
+                tol = 1e-3 if dtype == mx.float32 else 1.5e-3
+                self.assertEqual(y.shape, y_hat.shape)
+                self.assertLess((y - y_hat).abs().max().item(), tol)
+
     def test_quantize_dequantize(self):
         w = mx.random.normal(shape=(128, 512))
         for gs in [32, 64, 128]:
